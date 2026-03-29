@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Build outputs
+dist/
+build/
+*.avm
+*.prover
+*.verifier
+outputs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+.nyc_output/
+
+# Aleo dev toolkit
+aleo-dev-toolkit/
+
+# Wave2 submission files
+wave2-submission-id.md
+wave2-submission.md
+wave2-form-content.md
+
+# Wave3 submission files
+wave3-submission.md
+wave3-progress-report.md
+veiled_markets_buy_shares_audit.md
+wave3-judge-feedback.md
+
+# Leo compiler source
+leo/
+
+# SnarkOS
+snarkOS/
+
+# MT4 files
+frontend/mt4setup.exe
+frontend/mt4ubuntu.sh
+
+# Market proposals
+markets-proposals.md
+
+# Supabase
+supabase/

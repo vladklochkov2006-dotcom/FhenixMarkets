@@ -1,0 +1,16 @@
+[
+  {
+    "id": "3a7214a5",
+    "label": "vite-gov",
+    "command": "cd /media/mdlog/mdlog/Project-MDlabs/aleo-akindo/veiled-markets/frontend && npx vite --host 2>&1",
+    "cwd": "/media/mdlog/mdlog/Project-MDlabs/aleo-akindo/veiled-markets",
+    "ownerSessionFile": "/home/mdlog/.gsd/sessions/--media-mdlog-mdlog-Project-MDlabs-aleo-akindo-veiled-markets--/2026-03-20T02-58-54-799Z_a9905585-6f2d-4593-a589-9dc38324c87b.jsonl",
+    "persistAcrossSessions": false,
+    "startedAt": 1773990096711,
+    "processType": "server",
+    "group": null,
+    "readyPattern": null,
+    "readyPort": 5173,
+    "pid": 468261
+  }
+]

@@ -1,0 +1,167 @@
+import { Clock, Users, TrendingUp, Shield } from 'lucide-react'
+import { useMemo, useRef } from 'react'
+import { useLiveCountdown } from '@/hooks/useGlobalTicker'
+import { type Market } from '@/lib/store'
+import { cn, formatCredits, formatPercentage, getCategoryName, getCategoryEmoji, getCategoryStrip, getCategoryColor } from '@/lib/utils'
+
+import { StatusBadge, getStatusVariant } from '@/components/ui/StatusBadge'
+import { calculateAllPrices, type AMMReserves } from '@/lib/amm'
+import { getMarketThumbnail, isContainThumbnail } from '@/lib/market-thumbnails'
+
+function MarketThumb({ url, question, size = 'md' }: { url: string; question: string; size?: 'sm' | 'md' | 'lg' }) {
+  const useContain = isContainThumbnail(url)
+  const sizeClass = size === 'sm' ? 'w-8 h-8 rounded-lg' : size === 'lg' ? 'w-11 h-11 rounded-xl' : 'w-10 h-10 rounded-xl'
+  return (
+    <div className="flex gap-3 mb-4">
+      <div className={cn(sizeClass, 'overflow-hidden shrink-0 bg-surface-800', useContain && 'p-1.5 flex items-center justify-center')}>
+        <img src={url} alt="" className={cn('w-full h-full', useContain ? 'object-contain' : 'object-cover')} loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+      </div>
+      <h3 className="text-base font-semibold text-white line-clamp-2 group-hover:text-brand-300 transition-colors leading-snug">
+        {question}
+      </h3>
+    </div>
+  )
+}
+
+// Colors for up to 4 outcomes
+const OUTCOME_COLORS = [
+  { text: 'text-yes-400', bg: 'bg-yes-500/5', border: 'border-yes-500/20', bar: 'bg-yes-500', hoverBg: 'hover:bg-yes-500/20', hoverBorder: 'hover:border-yes-500/40' },
+  { text: 'text-no-400', bg: 'bg-no-500/5', border: 'border-no-500/20', bar: 'bg-no-500', hoverBg: 'hover:bg-no-500/20', hoverBorder: 'hover:border-no-500/40' },
+  { text: 'text-purple-400', bg: 'bg-purple-500/5', border: 'border-purple-500/20', bar: 'bg-purple-500', hoverBg: 'hover:bg-purple-500/20', hoverBorder: 'hover:border-purple-500/40' },
+  { text: 'text-brand-400', bg: 'bg-brand-500/5', border: 'border-brand-500/20', bar: 'bg-brand-500', hoverBg: 'hover:bg-brand-500/20', hoverBorder: 'hover:border-brand-500/40' },
+]
+
+interface MarketCardProps {
+  market: Market
+  index: number
+  onClick: () => void
+}
+
+export function MarketCard({ market, index, onClick }: MarketCardProps) {
+  const timeRemaining = useLiveCountdown(market.deadlineTimestamp, market.timeRemaining)
+  const isExpired = timeRemaining === 'Ended' || market.status !== 1
+  const statusVariant = getStatusVariant(market.status, isExpired)
+
+  const numOutcomes = market.numOutcomes ?? 2
+  const outcomeLabels = market.outcomeLabels ?? (numOutcomes === 2 ? ['Yes', 'No'] : Array.from({ length: numOutcomes }, (_, i) => `Outcome ${i + 1}`))
+
+  const prices = useMemo(() => {
+    const reserves: AMMReserves = {
+      reserve_1: market.yesReserve ?? 0n,
+      reserve_2: market.noReserve ?? 0n,
+      reserve_3: market.reserve3 ?? 0n,
+      reserve_4: market.reserve4 ?? 0n,
+      num_outcomes: numOutcomes,
+    }
+    return calculateAllPrices(reserves)
+  }, [market.yesReserve, market.noReserve, market.reserve3, market.reserve4, numOutcomes])
+
+  const isBinary = numOutcomes === 2
+  const categoryColor = getCategoryColor(market.category)
+
+  const isHot = market.tags?.includes('Hot') || market.tags?.includes('Trending') || market.tags?.includes('Featured')
+
+  // Only animate on first mount, not on data refreshes
+  const hasAnimated = useRef(false)
+  const shouldAnimate = !hasAnimated.current
+  if (shouldAnimate) hasAnimated.current = true
+
+  return (
+    <div
+      onClick={onClick}
+      style={shouldAnimate ? { animationDelay: `${index * 60}ms` } : undefined}
+      className={cn(
+        "market-card group relative overflow-hidden",
+        shouldAnimate && "animate-fade-in-up",
+        getCategoryStrip(market.category),
+        isExpired && "opacity-60",
+        isHot && "pulse-glow"
+      )}
+    >
+      {/* Subtle category glow on hover */}
+      <div
+        className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none rounded-2xl"
+        style={{ background: `radial-gradient(ellipse at 50% 0%, ${categoryColor.glow}, transparent 70%)` }}
+      />
+
+      <div className="relative">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-lg" role="img">{getCategoryEmoji(market.category)}</span>
+            <span className={cn("category-badge", categoryColor.text)}>{getCategoryName(market.category)}</span>
+            {isExpired && <StatusBadge variant={statusVariant} />}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-shrink-0 px-2 py-1 rounded-md bg-brand-500/8">
+            <Shield className="w-3 h-3 text-brand-400" />
+            <span className="text-[10px] text-brand-400 font-semibold">Private</span>
+          </div>
+        </div>
+
+        {/* Question + Thumbnail */}
+        <MarketThumb url={getMarketThumbnail(market.question, market.category, market.thumbnailUrl)} question={market.question} />
+
+        {/* Description snippet */}
+        {market.description && (
+          <p className="text-xs text-surface-300 line-clamp-2 leading-relaxed -mt-1 mb-3">
+            {market.description}
+          </p>
+        )}
+
+        {/* Odds Display */}
+        <div className="mb-4">
+          {isBinary ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-yes-500/5">
+                <span className="text-sm text-yes-400 font-medium">{outcomeLabels[0]}</span>
+                <span className="text-sm font-bold text-yes-400 tabular-nums">{formatPercentage(market.yesPercentage)}</span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-no-500/5">
+                <span className="text-sm text-no-400 font-medium">{outcomeLabels[1]}</span>
+                <span className="text-sm font-bold text-no-400 tabular-nums">{formatPercentage(market.noPercentage)}</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Multi-outcome chips with colored borders + tinted background */}
+              <div className="grid grid-cols-2 gap-1.5">
+                {outcomeLabels.map((label, i) => {
+                  const pct = (prices[i] ?? 0) * 100
+                  const colors = OUTCOME_COLORS[i] || OUTCOME_COLORS[0]
+                  return (
+                    <div key={i} className={cn(
+                      'flex items-center gap-2 px-2.5 py-2 rounded-lg',
+                      colors.bg
+                    )}>
+                      <span className={cn('text-xs truncate font-medium', colors.text)}>{label}</span>
+                      <span className={cn('text-sm font-bold ml-auto tabular-nums', colors.text)}>{formatPercentage(pct)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Stats — compact inline */}
+        <div className="flex items-center gap-4 pt-3 mt-auto border-t border-white/[0.03] text-xs text-surface-500">
+          <span className="flex items-center gap-1.5 tabular-nums">
+            <TrendingUp className="w-3 h-3" />
+            {formatCredits(market.totalVolume, 0)} {market.tokenType ?? 'ETH'}
+          </span>
+          <span className="flex items-center gap-1.5 tabular-nums">
+            <Users className="w-3 h-3" />
+            {market.totalBets}
+          </span>
+          <span className="flex items-center gap-1.5 tabular-nums ml-auto">
+            <Clock className="w-3 h-3" />
+            {timeRemaining}
+          </span>
+        </div>
+
+
+      </div>
+    </div>
+  )
+}

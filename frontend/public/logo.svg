@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a1929"/>
+      <stop offset="100%" style="stop-color:#001623"/>
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="96" fill="url(#bg)" stroke="#0AD9DC" stroke-width="2" opacity="0.9"/>
+  <!-- Inner glow -->
+  <circle cx="100" cy="100" r="80" fill="none" stroke="#0AD9DC" stroke-width="0.5" opacity="0.15"/>
+  <!-- Parentheses -->
+  <text x="28" y="135" font-family="'Arial Black', 'Helvetica Neue', sans-serif" font-size="100" font-weight="900" fill="white" opacity="0.9">(</text>
+  <text x="142" y="135" font-family="'Arial Black', 'Helvetica Neue', sans-serif" font-size="100" font-weight="900" fill="white" opacity="0.9">)</text>
+  <!-- f letter -->
+  <text x="62" y="138" font-family="'Arial Black', 'Helvetica Neue', sans-serif" font-size="105" font-weight="900" fill="white">f</text>
+  <!-- Asterisk * in cyan -->
+  <text x="118" y="110" font-family="'Arial Black', 'Helvetica Neue', sans-serif" font-size="50" font-weight="900" fill="#0AD9DC">*</text>
+</svg>

@@ -1,0 +1,2747 @@
+// ============================================================================
+// VEILED MARKETS - Fhenix Client Integration
+// ============================================================================
+// Client for interacting with the deployed veiled_markets_v35.aleo program
+// ============================================================================
+
+import { config } from './config';
+import {
+  fetchMarketRegistry,
+  isSupabaseAvailable,
+  clearAllSupabaseData,
+  registerMarketInRegistry,
+  supabase,
+  type MarketRegistryEntry,
+} from './supabase';
+import { devLog, devWarn } from './logger'
+
+// Contract constants (matching main.leo v31)
+export const MARKET_STATUS = {
+  ACTIVE: 1,
+  CLOSED: 2,
+  RESOLVED: 3,
+  CANCELLED: 4,
+  PENDING_RESOLUTION: 5,
+  PENDING_FINALIZATION: 6,
+  DISPUTED: 7,
+} as const;
+
+export const OUTCOME = {
+  ONE: 1,
+  TWO: 2,
+  THREE: 3,
+  FOUR: 4,
+  // Legacy aliases
+  YES: 1,
+  NO: 2,
+} as const;
+
+export const TOKEN_TYPE = {
+  ETH: 1,
+  USDCX: 2,
+  USAD: 3,
+} as const;
+
+export const TOKEN_SYMBOLS: Record<number, string> = {
+  1: 'ETH',
+  2: 'USDCX',
+  3: 'USAD',
+};
+
+// Must stay in sync with WINNER_CLAIM_PRIORITY_BLOCKS in contracts/src/main.leo.
+export const WINNER_CLAIM_PRIORITY_BLOCKS = 2880n;
+
+export const FEES = {
+  PROTOCOL_FEE_BPS: 50n,  // 0.5% per trade
+  CREATOR_FEE_BPS: 50n,   // 0.5% per trade
+  LP_FEE_BPS: 100n,       // 1.0% per trade
+  TOTAL_FEE_BPS: 200n,    // 2.0% total
+  FEE_DENOMINATOR: 10000n,
+};
+
+export const CHALLENGE_WINDOW_BLOCKS = 2880n; // ~12 hours
+
+const CREATE_MARKET_FUNCTIONS = new Set(['create_market', 'create_market_usdcx', 'create_market_usad']);
+
+/**
+ * Get the correct program ID for a given token type.
+ * USAD markets live in a separate program (veiled_markets_usad_v7.aleo).
+ */
+export function getProgramIdForToken(tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH'): string {
+  if (tokenType === 'USAD') return config.usadProgramId;
+  if (tokenType === 'USDCX') return config.usdcxMarketProgramId;
+  return config.programId;
+}
+
+/**
+ * Get the stablecoin program ID for a given token type.
+ */
+export function getStablecoinProgramId(tokenType: 'USDCX' | 'USAD'): string {
+  if (tokenType === 'USAD') return 'test_usad_stablecoin.aleo';
+  return config.usdcxProgramId;
+}
+
+function isCreateMarketFunction(functionName: unknown): boolean {
+  return typeof functionName === 'string' && CREATE_MARKET_FUNCTIONS.has(functionName);
+}
+
+export const MIN_TRADE_AMOUNT = 1000n;       // 0.001 tokens
+export const MIN_DISPUTE_BOND = 1000000n;    // 1 token
+export const MIN_LIQUIDITY = 10000n;         // 0.01 tokens
+
+// Types matching the contract structures (v30)
+export interface MarketData {
+  id: string;
+  creator: string;
+  resolver: string;
+  question_hash: string;
+  category: number;
+  num_outcomes: number;     // v12: 2, 3, or 4
+  deadline: bigint;
+  resolution_deadline: bigint;
+  status: number;
+  created_at: bigint;
+  token_type: number;       // 1=ETH, 2=USDCX
+}
+
+export interface AMMPoolData {
+  market_id: string;
+  reserve_1: bigint;
+  reserve_2: bigint;
+  reserve_3: bigint;
+  reserve_4: bigint;
+  total_liquidity: bigint;
+  total_lp_shares: bigint;
+  total_volume: bigint;
+}
+
+export interface MarketResolutionData {
+  market_id: string;
+  winning_outcome: number;  // v33: proposed_outcome from ResolutionRound
+  resolver: string;         // v33: proposer from ResolutionRound
+  resolved_at: bigint;      // v33: submitted_at
+  challenge_deadline: bigint;
+  finalized: boolean;
+  // v33: Open Voting + Bond fields
+  round: number;
+  proposer: string;
+  proposed_outcome: number;
+  bond_amount: bigint;
+  total_bonded: bigint;
+}
+
+export interface MarketFeesData {
+  market_id: string;
+  protocol_fees: bigint;
+  creator_fees: bigint;
+}
+
+export interface DisputeDataResult {
+  market_id: string;
+  disputer: string;
+  proposed_outcome: number;
+  bond_amount: bigint;
+  disputed_at: bigint;
+}
+
+// Legacy alias
+export type MarketPoolData = AMMPoolData;
+
+// API configuration
+const API_BASE_URL = config.rpcUrl || 'https://api.explorer.provable.com/v1/testnet';
+const PROGRAM_ID = config.programId;
+
+// Timeout for network requests (prevents UI from hanging indefinitely)
+const FETCH_TIMEOUT_MS = 10_000; // 10 seconds per request
+
+// ============================================================================
+// In-memory cache for mapping values and block height
+// ============================================================================
+const CACHE_TTL_MS = 30_000; // 30 seconds — fresh data within this window
+const BLOCK_HEIGHT_CACHE_TTL_MS = 10_000; // 10 seconds for block height
+
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const mappingCache = new Map<string, CacheEntry<unknown>>();
+let blockHeightCache: CacheEntry<bigint> | null = null;
+
+function getCachedMapping<T>(key: string): T | undefined {
+  const entry = mappingCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.timestamp > CACHE_TTL_MS) return undefined;
+  return entry.data as T;
+}
+
+function getAnyCachedMapping<T>(key: string): T | undefined {
+  const entry = mappingCache.get(key);
+  return entry?.data as T | undefined;
+}
+
+function setCachedMapping<T>(key: string, data: T): void {
+  mappingCache.set(key, { data, timestamp: Date.now() });
+}
+
+function getCachedBlockHeight(): bigint | undefined {
+  if (!blockHeightCache) return undefined;
+  if (Date.now() - blockHeightCache.timestamp > BLOCK_HEIGHT_CACHE_TTL_MS) return undefined;
+  return blockHeightCache.data;
+}
+
+function getAnyCachedBlockHeight(): bigint | undefined {
+  return blockHeightCache?.data;
+}
+
+function setCachedBlockHeight(height: bigint): void {
+  blockHeightCache = { data: height, timestamp: Date.now() };
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export function isTransientNetworkError(error: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return true;
+  }
+
+  if (error instanceof DOMException) {
+    return error.name === 'AbortError' || error.name === 'NetworkError';
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('err_network_changed')
+    || normalized.includes('network changed')
+    || normalized.includes('failed to fetch')
+    || normalized.includes('networkerror')
+    || normalized.includes('load failed')
+    || normalized.includes('the network connection was lost')
+    || normalized.includes('network request failed')
+    || normalized.includes('fetch failed')
+  );
+}
+
+async function waitForNetworkRecovery(delayMs: number): Promise<void> {
+  if (typeof window === 'undefined') {
+    await new Promise(r => setTimeout(r, delayMs));
+    return;
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('online', handleOnline);
+        clearTimeout(timeoutId);
+        resolve();
+      };
+      const handleOnline = () => finish();
+      const timeoutId = window.setTimeout(finish, delayMs);
+      window.addEventListener('online', handleOnline, { once: true });
+    });
+    return;
+  }
+
+  await new Promise(r => setTimeout(r, delayMs));
+}
+
+// Retry wrapper for flaky API (testnet often returns 522 errors)
+async function fetchWithRetry(url: string, maxRetries: number = 2): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(url);
+      if (response.ok || response.status === 404) {
+        return response;
+      }
+      // Retry on server errors (5xx)
+      if (response.status >= 500) {
+        lastError = new Error(`Server error: ${response.status}`);
+        if (attempt < maxRetries - 1) {
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          continue;
+        }
+      }
+      return response;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries - 1) {
+        const retryDelay = isTransientNetworkError(lastError)
+          ? 1_000 * (attempt + 1)
+          : 500 * (attempt + 1);
+        await waitForNetworkRecovery(retryDelay);
+      }
+    }
+  }
+  throw lastError || new Error('Fetch failed after retries');
+}
+
+/**
+ * Transaction status and details
+ */
+export interface TransactionDetails {
+  id: string;
+  status: 'pending' | 'confirmed' | 'failed';
+  outputs?: TransactionOutput[];
+  error?: string;
+}
+
+export interface TransactionOutput {
+  type: string;
+  id: string;
+  value: string;
+}
+
+/**
+ * Fetch transaction details from the blockchain
+ */
+export async function getTransactionDetails(transactionId: string): Promise<TransactionDetails | null> {
+  try {
+    const url = `${API_BASE_URL}/transaction/${transactionId}`;
+    devLog('Fetching transaction details:', url);
+
+    const response = await fetchWithTimeout(url);
+    if (!response.ok) {
+      if (response.status === 404) {
+        // Transaction not yet confirmed
+        return { id: transactionId, status: 'pending' };
+      }
+      throw new Error(`Failed to fetch transaction: ${response.status}`);
+    }
+
+    const data = await response.json();
+    devLog('Transaction data:', data);
+
+    // Extract outputs from the transaction
+    const outputs: TransactionOutput[] = [];
+
+    // Parse execution outputs if available
+    if (data.execution?.transitions) {
+      for (const transition of data.execution.transitions) {
+        if (transition.outputs) {
+          for (const output of transition.outputs) {
+            outputs.push({
+              type: output.type || 'unknown',
+              id: output.id || '',
+              value: output.value || '',
+            });
+          }
+        }
+      }
+    }
+
+    return {
+      id: transactionId,
+      status: 'confirmed',
+      outputs,
+    };
+  } catch (error) {
+    console.error('Failed to fetch transaction details:', error);
+    return null;
+  }
+}
+
+/**
+ * Extract market ID from create_market transaction outputs
+ * The contract returns the market_id as the first output
+ */
+export function extractMarketIdFromTransaction(txDetails: TransactionDetails): string | null {
+  if (!txDetails.outputs || txDetails.outputs.length === 0) {
+    return null;
+  }
+
+  // Look for a field value in the outputs
+  for (const output of txDetails.outputs) {
+    const value = output.value;
+    // The market_id should be a field type
+    if (value && value.includes('field')) {
+      // Extract the field value
+      const match = value.match(/(\d+field)/);
+      if (match) {
+        devLog('Extracted market ID from transaction:', match[1]);
+        return match[1];
+      }
+    }
+  }
+
+  // Also try parsing the raw output value
+  for (const output of txDetails.outputs) {
+    try {
+      // Some outputs might be JSON or have nested structure
+      const parsed = typeof output.value === 'string' ? output.value : JSON.stringify(output.value);
+      const fieldMatch = parsed.match(/(\d+)field/);
+      if (fieldMatch) {
+        const marketId = `${fieldMatch[1]}field`;
+        devLog('Extracted market ID from parsed output:', marketId);
+        return marketId;
+      }
+    } catch {
+      // Continue to next output
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Poll for transaction confirmation and extract market ID.
+ * Strategy:
+ *   1. If transactionId starts with 'at1', poll the RPC directly.
+ *   2. Otherwise (wallet event ID), skip RPC polling and go to blockchain scan.
+ *   3. Blockchain scan: scan recent blocks for create_market transitions
+ *      matching our questionHash.
+ */
+export async function waitForMarketCreation(
+  transactionId: string,
+  questionHash: string,
+  questionText: string,
+  maxAttempts: number = 20,
+  intervalMs: number = 15000,
+  programId: string = PROGRAM_ID
+): Promise<ScanResult | null> {
+  devLog('[waitForMarket] Waiting for market creation:', transactionId, '| program:', programId);
+
+  // Strategy 1: If we have an on-chain tx ID, poll the RPC directly
+  if (transactionId.startsWith('at1')) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      devLog(`[waitForMarket] RPC poll ${attempt + 1}/${maxAttempts}...`);
+      const txDetails = await getTransactionDetails(transactionId);
+
+      if (txDetails?.status === 'confirmed') {
+        const marketId = extractMarketIdFromTransaction(txDetails);
+        if (marketId) {
+          devLog('[waitForMarket] Market created! ID:', marketId);
+          addKnownMarketId(marketId);
+          registerQuestionText(marketId, questionText);
+          registerMarketTransaction(marketId, transactionId);
+          registerQuestionText(questionHash, questionText);
+          return { marketId, transactionId };
+        }
+        devWarn('[waitForMarket] TX confirmed but no market ID in outputs');
+        return null;
+      }
+
+      if (txDetails?.status === 'failed') {
+        console.error('[waitForMarket] Transaction failed:', txDetails.error);
+        return null;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  // Strategy 2: Blockchain scan — scan recent blocks for our create_market transition.
+  // This works for ALL wallets (Shield, Puzzle, Leo, etc.) regardless of event ID format.
+  devLog('[waitForMarket] Falling back to blockchain scan for questionHash:', questionHash);
+
+  // Wait for the transaction to be included in a block, then do progressively deeper scans
+  // Quick first scan (30 blocks ~7.5 min), then deeper scans with longer delays
+  const scanSchedule = [
+    { delayMs: 10_000, blocks: 30 },    // After 10s: quick scan of very recent blocks
+    { delayMs: 15_000, blocks: 100 },   // After 15s: scan last 100 blocks (~25 min)
+    { delayMs: 30_000, blocks: 300 },   // After 30s: scan last 300 blocks (~75 min)
+    { delayMs: 45_000, blocks: 500 },   // After 45s: scan last 500 blocks (~2 hours)
+    { delayMs: 60_000, blocks: 800 },   // After 60s: scan last 800 blocks (~3 hours)
+  ];
+
+  for (let i = 0; i < scanSchedule.length; i++) {
+    const { delayMs, blocks } = scanSchedule[i];
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+
+    try {
+      devLog(`[waitForMarket] Scan attempt ${i + 1}/${scanSchedule.length} (${blocks} blocks)...`);
+      const scanResult = await scanBlockchainForMarket(questionHash, blocks, programId);
+      if (scanResult) {
+        devLog('[waitForMarket] Found market via blockchain scan! ID:', scanResult.marketId, 'TX:', scanResult.transactionId);
+        addKnownMarketId(scanResult.marketId);
+        registerQuestionText(scanResult.marketId, questionText);
+        registerQuestionText(questionHash, questionText);
+        registerMarketTransaction(scanResult.marketId, scanResult.transactionId);
+        return scanResult;
+      }
+    } catch (err) {
+      devWarn(`[waitForMarket] Scan attempt ${i + 1} error:`, err);
+    }
+  }
+
+  devWarn('[waitForMarket] All strategies exhausted');
+  return null;
+}
+
+function getCreateMarketProgramIds(preferredProgramId?: string): string[] {
+  const programIds = [
+    preferredProgramId,
+    PROGRAM_ID,
+    config.usdcxMarketProgramId,
+    config.usadProgramId,
+    ...config.legacyUsadProgramIds,
+    ...config.legacyProgramIds,
+  ].filter((pid): pid is string => Boolean(pid));
+
+  return [...new Set(programIds)];
+}
+
+/**
+ * Scan recent blocks for a create_market transaction matching the given question hash.
+ * Looks at the finalize arguments to find the market_id.
+ *
+ * Uses small parallel batches (3) to avoid API rate limiting, with retries for failed blocks.
+ */
+async function scanBlockchainForMarket(
+  questionHash: string,
+  blocksToScan: number = 500,
+  programId: string = PROGRAM_ID
+): Promise<ScanResult | null> {
+  try {
+    const latestHeight = await getCurrentBlockHeight();
+    const startHeight = Number(latestHeight);
+
+    devLog(`[scanBlockchain] Scanning blocks ${startHeight - blocksToScan} to ${startHeight} for hash ${questionHash.slice(0, 20)}...`);
+
+    let scannedCount = 0;
+    let failedCount = 0;
+
+    // Scan in parallel batches of 3 blocks (newest first) to avoid API rate limiting
+    const BATCH_SIZE = 3;
+    for (let offset = 0; offset < blocksToScan; offset += BATCH_SIZE) {
+      const heights: number[] = [];
+      for (let i = 0; i < BATCH_SIZE && offset + i < blocksToScan; i++) {
+        const height = startHeight - offset - i;
+        if (height >= 0) heights.push(height);
+      }
+
+      const results = await Promise.all(
+        heights.map(h => scanBlockForCreateMarketWithRetry(h, questionHash, programId))
+      );
+
+      scannedCount += heights.length;
+      failedCount += results.filter(r => r === undefined).length; // undefined = failed after retries
+
+      const found = results.find(r => r !== null && r !== undefined);
+      if (found) {
+        devLog(`[scanBlockchain] Found market after scanning ${scannedCount} blocks (${failedCount} failed)`);
+        return found;
+      }
+
+      // Delay between batches to avoid API rate limiting
+      if (offset + BATCH_SIZE < blocksToScan) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    devLog(`[scanBlockchain] Not found after ${scannedCount} blocks (${failedCount} blocks failed to fetch)`);
+  } catch (err) {
+    devWarn('[scanBlockchain] Error:', err);
+  }
+
+  return null;
+}
+
+/**
+ * Scan a single block with 1 retry on failure.
+ * Returns: ScanResult if found, null if scanned but not found, undefined if fetch failed.
+ */
+async function scanBlockForCreateMarketWithRetry(
+  blockHeight: number,
+  questionHash: string,
+  programId: string = PROGRAM_ID
+): Promise<ScanResult | null | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await scanBlockForCreateMarket(blockHeight, questionHash, programId);
+      return result; // null (not found) or ScanResult (found)
+    } catch {
+      if (attempt === 0) {
+        await new Promise(r => setTimeout(r, 500)); // Brief pause before retry
+      }
+    }
+  }
+  return undefined; // Both attempts failed
+}
+
+/** Result of a blockchain scan: market_id + on-chain transaction ID */
+export interface ScanResult {
+  marketId: string
+  transactionId: string  // Real at1... on-chain TX ID
+}
+
+/**
+ * Check a single block for a create_market transition matching the question hash.
+ * Throws on fetch failure (caller handles retry). Returns null if block was fetched but no match.
+ */
+async function scanBlockForCreateMarket(
+  blockHeight: number,
+  questionHash: string,
+  programId: string = PROGRAM_ID
+): Promise<ScanResult | null> {
+  const url = `${API_BASE_URL}/block/${blockHeight}`;
+  const response = await fetchWithRetry(url, 3);
+  if (!response.ok) {
+    if (response.status === 404) return null; // Block doesn't exist
+    throw new Error(`Block ${blockHeight}: HTTP ${response.status}`);
+  }
+
+  const block = await response.json();
+  const transactions = block.transactions || [];
+
+  for (const txWrapper of transactions) {
+    const tx = txWrapper.transaction || txWrapper;
+    const txId = tx.id || txWrapper.id || '';  // Extract at1... transaction ID
+    const transitions = tx.execution?.transitions || [];
+
+    for (const transition of transitions) {
+      if (transition.program !== programId || !isCreateMarketFunction(transition.function)) continue;
+
+      // Check the future output for finalize arguments
+      for (const output of (transition.outputs || [])) {
+        if (output.type !== 'future') continue;
+
+        const value = output.value || '';
+        // The finalize arguments are: market_id, creator, question_hash, category, deadline, resolution_deadline, resolver, token_type
+        // question_hash is the 3rd argument (index 2)
+        const args = extractFinalizeArguments(value);
+        if (args.length >= 3) {
+          const foundQuestionHash = args[2]; // question_hash
+          const foundMarketId = args[0];     // market_id
+
+          if (foundQuestionHash === questionHash && foundMarketId) {
+            devLog(`[scanBlock] MATCH at block ${blockHeight}! market_id=${foundMarketId.slice(0, 30)}... tx=${txId.slice(0, 15)}...`);
+            return { marketId: foundMarketId, transactionId: txId };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the arguments array from a finalize/future output value.
+ * The value looks like: { program_id: ..., function_name: ..., arguments: [arg0, arg1, ...] }
+ */
+function extractFinalizeArguments(value: string): string[] {
+  const args: string[] = [];
+
+  // Find the OUTER arguments array using bracket counting.
+  // The old non-greedy regex /([\s\S]*?)\]/ stopped at the FIRST ']' which
+  // is the inner child future's bracket (e.g., credits.aleo/transfer_public_as_signer).
+  // This caused market_id and question_hash to never be extracted.
+  const outerIdx = value.indexOf('arguments:');
+  if (outerIdx === -1) return args;
+
+  const bracketStart = value.indexOf('[', outerIdx);
+  if (bracketStart === -1) return args;
+
+  // Find matching closing bracket using depth counting
+  let depth = 0;
+  let bracketEnd = -1;
+  for (let i = bracketStart; i < value.length; i++) {
+    if (value[i] === '[') depth++;
+    else if (value[i] === ']') {
+      depth--;
+      if (depth === 0) {
+        bracketEnd = i;
+        break;
+      }
+    }
+  }
+  if (bracketEnd === -1) return args;
+
+  const argsContent = value.substring(bracketStart + 1, bracketEnd);
+
+  // Strip nested { } content (child futures) to only extract top-level argument values
+  let topLevel = '';
+  let braceDepth = 0;
+  for (let i = 0; i < argsContent.length; i++) {
+    if (argsContent[i] === '{') braceDepth++;
+    else if (argsContent[i] === '}') braceDepth--;
+    else if (braceDepth === 0) topLevel += argsContent[i];
+  }
+
+  // Match field, address, u8, u64, u128 values from top-level arguments only
+  const valuePattern = /(\d+field|\d+u\d+|aleo[a-z0-9]+)/g;
+  let match;
+  while ((match = valuePattern.exec(topLevel)) !== null) {
+    args.push(match[1]);
+  }
+
+  return args;
+}
+
+/**
+ * Parse Fhenix struct value from API response
+ */
+function parseAleoStruct(value: string | any): Record<string, string> {
+  if (!value) return {};
+
+  // Ensure we have a string (API can return non-string via JSON.parse)
+  const strValue = typeof value === 'string' ? value : String(value);
+
+  // Value is already a clean string with actual newlines (not \n)
+  // Remove outer braces
+  const inner = strValue.replace(/^\{|\}$/g, '').trim();
+  const result: Record<string, string> = {};
+
+  // Split by actual newlines
+  const lines = inner.split('\n').map(l => l.trim()).filter(l => l);
+
+  for (const line of lines) {
+    // Remove trailing comma if present
+    const cleanLine = line.replace(/,$/, '').trim();
+    const colonIndex = cleanLine.indexOf(':');
+    if (colonIndex === -1) continue;
+
+    const key = cleanLine.substring(0, colonIndex).trim();
+    const val = cleanLine.substring(colonIndex + 1).trim().replace(/,$/, '');
+
+    if (key && val) {
+      result[key] = val;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Parse Fhenix value (remove type suffix)
+ */
+function parseAleoValue(value: string | number | boolean | null | undefined): string | number | bigint | boolean {
+  if (value === null || value === undefined) return value as any;
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+
+  // Ensure we have a string (API can return non-string via JSON.parse)
+  const strValue = typeof value === 'string' ? value : String(value);
+  const trimmed = strValue.trim().replace(/"/g, '');
+
+  // Handle field type
+  if (trimmed.endsWith('field')) {
+    return trimmed;
+  }
+
+  // Handle u8
+  if (trimmed.endsWith('u8')) {
+    const num = trimmed.replace('u8', '');
+    return parseInt(num);
+  }
+
+  // Handle u64
+  if (trimmed.endsWith('u64')) {
+    const num = trimmed.replace('u64', '');
+    return BigInt(num);
+  }
+
+  // Handle u128
+  if (trimmed.endsWith('u128')) {
+    const num = trimmed.replace('u128', '');
+    return BigInt(num);
+  }
+
+  // Handle addresses
+  if (trimmed.startsWith('aleo1')) {
+    return trimmed;
+  }
+
+  // Handle booleans
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+
+  return trimmed;
+}
+
+/**
+ * Fetch current block height
+ */
+export async function getCurrentBlockHeight(): Promise<bigint> {
+  const cached = getCachedBlockHeight();
+  if (cached !== undefined) return cached;
+
+  try {
+    const response = await fetchWithRetry(`${API_BASE_URL}/latest/height`, 3);
+    if (!response.ok) throw new Error(`Failed to fetch block height: ${response.status}`);
+    const height = await response.json();
+    const result = BigInt(height);
+    setCachedBlockHeight(result);
+    return result;
+  } catch (error) {
+    const stale = getAnyCachedBlockHeight();
+    if (stale !== undefined && isTransientNetworkError(error)) {
+      devWarn('[BlockHeight] Network changed while fetching latest height, using cached value');
+      return stale;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fetch a mapping value from the contract
+ */
+export async function getMappingValue<T>(
+  mappingName: string,
+  key: string,
+  programId?: string
+): Promise<T | null> {
+  const pid = programId || PROGRAM_ID;
+  const cacheKey = `${pid}:${mappingName}:${key}`;
+  const cached = getCachedMapping<T>(cacheKey);
+  if (cached !== undefined) return cached;
+
+  try {
+    const url = `${API_BASE_URL}/program/${pid}/mapping/${mappingName}/${key}`;
+    const response = await fetchWithRetry(url, 3);
+    if (!response.ok) {
+      if (response.status === 404) return null;
+      throw new Error(`Failed to fetch mapping: ${response.status}`);
+    }
+
+    const data = await response.text();
+
+    // Parse the JSON string first (API returns JSON-encoded string)
+    const cleanData = JSON.parse(data);
+
+    // API returns null for non-existent keys
+    if (cleanData === null || cleanData === undefined) return null;
+
+    let result: T;
+    // If it's a struct (starts with {), parse it
+    if (typeof cleanData === 'string' && cleanData.trim().startsWith('{')) {
+      result = parseAleoStruct(cleanData) as T;
+    } else {
+      // Otherwise parse as simple value (coerce non-strings safely)
+      result = parseAleoValue(cleanData) as T;
+    }
+
+    setCachedMapping(cacheKey, result);
+    return result;
+  } catch (error) {
+    const stale = getAnyCachedMapping<T>(cacheKey);
+    if (stale !== undefined && isTransientNetworkError(error)) {
+      devWarn(`[Mapping] Network changed while fetching ${mappingName}[${key}] — using cached value`);
+      return stale;
+    }
+    if (isTransientNetworkError(error)) {
+      devWarn(`Transient network issue fetching mapping ${mappingName}[${key}]`);
+      return null;
+    }
+    console.error(`Failed to fetch mapping ${mappingName}[${key}]:`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch market data by ID
+ */
+export async function getMarket(marketId: string, programId?: string): Promise<MarketData | null> {
+  const data = await getMappingValue<Record<string, string>>('markets', marketId, programId);
+  if (!data) return null;
+
+  devLog('getMarket parsed data:', data);
+
+  // Parse each field explicitly
+  const parsedCategory = parseAleoValue(data.category || '0u8');
+  const parsedNumOutcomes = parseAleoValue(data.num_outcomes || '2u8');
+  const parsedDeadline = parseAleoValue(data.deadline || '0u64');
+  const parsedResolutionDeadline = parseAleoValue(data.resolution_deadline || '0u64');
+  const parsedStatus = parseAleoValue(data.status || '1u8');
+  const parsedCreatedAt = parseAleoValue(data.created_at || '0u64');
+  const parsedTokenType = parseAleoValue(data.token_type || '1u8');
+
+  const result = {
+    id: data.id || marketId,
+    creator: data.creator || '',
+    resolver: data.resolver || data.creator || '',
+    question_hash: data.question_hash || '',
+    category: typeof parsedCategory === 'number' ? parsedCategory : 0,
+    num_outcomes: typeof parsedNumOutcomes === 'number' ? parsedNumOutcomes : 2,
+    deadline: typeof parsedDeadline === 'bigint' ? parsedDeadline : 0n,
+    resolution_deadline: typeof parsedResolutionDeadline === 'bigint' ? parsedResolutionDeadline : 0n,
+    status: typeof parsedStatus === 'number' ? parsedStatus : 1,
+    created_at: typeof parsedCreatedAt === 'bigint' ? parsedCreatedAt : 0n,
+    token_type: typeof parsedTokenType === 'number' ? parsedTokenType : 1,
+  };
+
+  devLog('getMarket result:', result);
+  return result;
+}
+
+/**
+ * Fetch AMM pool data (v12 - replaces market_pools)
+ */
+export async function getAMMPool(marketId: string, programId?: string): Promise<AMMPoolData | null> {
+  const data = await getMappingValue<Record<string, string>>('amm_pools', marketId, programId);
+  if (!data) return null;
+
+  return {
+    market_id: String(data.market_id || marketId),
+    reserve_1: BigInt(parseAleoValue(data.reserve_1 || '0u128') as bigint),
+    reserve_2: BigInt(parseAleoValue(data.reserve_2 || '0u128') as bigint),
+    reserve_3: BigInt(parseAleoValue(data.reserve_3 || '0u128') as bigint),
+    reserve_4: BigInt(parseAleoValue(data.reserve_4 || '0u128') as bigint),
+    total_liquidity: BigInt(parseAleoValue(data.total_liquidity || '0u128') as bigint),
+    total_lp_shares: BigInt(parseAleoValue(data.total_lp_shares || '0u128') as bigint),
+    total_volume: BigInt(parseAleoValue(data.total_volume || '0u128') as bigint),
+  };
+}
+
+// Legacy alias
+export const getMarketPool = getAMMPool;
+
+/**
+ * Fetch market resolution data (v12 - with challenge window fields)
+ */
+export async function getMarketResolution(marketId: string, programId?: string): Promise<MarketResolutionData | null> {
+  // v34: Resolution state lives in vote_tallies, not resolution_rounds.
+  const [market, tally] = await Promise.all([
+    getMarket(marketId, programId),
+    getMappingValue<Record<string, string>>('vote_tallies', marketId, programId),
+  ]);
+
+  if (tally) {
+    const winningOutcome = Number(parseAleoValue(tally.winning_outcome || '0u8'));
+    const votingDeadline = BigInt(parseAleoValue(tally.voting_deadline || '0u64') as bigint);
+    const disputeDeadline = BigInt(parseAleoValue(tally.dispute_deadline || '0u64') as bigint);
+    const totalBonded = BigInt(parseAleoValue(tally.total_bonded || '0u128') as bigint);
+    const totalVoters = Number(parseAleoValue(tally.total_voters || '0u8'));
+    const finalized = String(parseAleoValue(tally.finalized || 'false')) === 'true';
+
+    const challengeDeadline = market?.status === MARKET_STATUS.PENDING_FINALIZATION || market?.status === MARKET_STATUS.RESOLVED
+      ? disputeDeadline
+      : votingDeadline;
+
+    return {
+      market_id: String(tally.market_id || marketId),
+      winning_outcome: winningOutcome,
+      resolver: market?.resolver || '',
+      resolved_at: market?.created_at || 0n,
+      challenge_deadline: challengeDeadline,
+      finalized,
+      round: totalVoters,  // v35: round = total_voters count
+      proposer: market?.resolver || '',
+      proposed_outcome: winningOutcome,
+      bond_amount: totalVoters > 0 ? 1_000_000n : 0n,
+      total_bonded: totalBonded,
+    };
+  }
+
+  // Legacy fallback for older contracts
+  const data = await getMappingValue<Record<string, string>>('resolution_rounds', marketId, programId);
+  if (!data) return null;
+
+  const proposedOutcome = Number(parseAleoValue(data.proposed_outcome || data.winning_outcome || '0u8'));
+  const proposer = String(data.proposer || data.resolver || '');
+
+  return {
+    market_id: String(data.market_id || marketId),
+    winning_outcome: proposedOutcome,
+    resolver: proposer,
+    resolved_at: BigInt(parseAleoValue(data.submitted_at || data.resolved_at || '0u64') as bigint),
+    challenge_deadline: BigInt(parseAleoValue(data.challenge_deadline || '0u64') as bigint),
+    finalized: String(parseAleoValue(data.finalized || 'false')) === 'true',
+    round: Number(parseAleoValue(data.round || '1u8')),
+    proposer: proposer,
+    proposed_outcome: proposedOutcome,
+    bond_amount: BigInt(parseAleoValue(data.bond_amount || '1000000u128') as bigint),
+    total_bonded: BigInt(parseAleoValue(data.total_bonded || '1000000u128') as bigint),
+  };
+}
+
+/**
+ * Fetch market fees data (v12 - per-market fee tracking)
+ */
+export async function getMarketFees(marketId: string): Promise<MarketFeesData | null> {
+  const data = await getMappingValue<Record<string, string>>('market_fees', marketId);
+  if (!data) return null;
+
+  return {
+    market_id: String(data.market_id || marketId),
+    protocol_fees: BigInt(parseAleoValue(data.protocol_fees || '0u128') as bigint),
+    creator_fees: BigInt(parseAleoValue(data.creator_fees || '0u128') as bigint),
+  };
+}
+
+/**
+ * Fetch dispute data for a market
+ */
+export async function getMarketDispute(marketId: string): Promise<DisputeDataResult | null> {
+  const data = await getMappingValue<Record<string, string>>('market_disputes', marketId);
+  if (!data) return null;
+
+  return {
+    market_id: String(data.market_id || marketId),
+    disputer: String(data.disputer || ''),
+    proposed_outcome: Number(parseAleoValue(data.proposed_outcome || '0u8')),
+    bond_amount: BigInt(parseAleoValue(data.bond_amount || '0u128') as bigint),
+    disputed_at: BigInt(parseAleoValue(data.disputed_at || '0u64') as bigint),
+  };
+}
+
+/**
+ * Fetch remaining collateral for a market (market_credits mapping).
+ * This reflects actual funds held after winner claims and LP withdrawals.
+ * Different from amm_pools.total_liquidity which is frozen after resolution.
+ */
+export async function getMarketCredits(marketId: string, programId?: string): Promise<bigint | null> {
+  const data = await getMappingValue<string>('market_credits', marketId, programId);
+  if (data === null || data === undefined) return null;
+  return BigInt(parseAleoValue(data) as bigint);
+}
+
+/**
+ * Check if a user has claimed for a market
+ */
+export async function hasUserClaimed(_marketId: string, _userAddress: string): Promise<boolean> {
+  // The claim key is a hash of market_id and claimer address
+  // For now, we'll return false as we can't compute the hash client-side easily
+  // In production, this would need to be tracked differently
+  return false;
+}
+
+/**
+ * Generate a random nonce field value (248 bits, safely < field max ~253 bits)
+ */
+function generateRandomNonce(): string {
+  const randomBytes = new Uint8Array(31);
+  crypto.getRandomValues(randomBytes);
+  let nonce = BigInt(0);
+  for (let i = 0; i < randomBytes.length; i++) {
+    nonce = (nonce << BigInt(8)) | BigInt(randomBytes[i]);
+  }
+  return `${nonce}field`;
+}
+
+/**
+ * Build inputs for create_market transaction (v30)
+ * create_market(question_hash, category, num_outcomes, deadline, res_deadline, resolver, initial_liquidity)
+ * Token type is determined by function name (create_market vs create_market_usdcx)
+ */
+export function buildCreateMarketInputs(
+  questionHash: string,
+  category: number,
+  numOutcomes: number,
+  deadline: bigint,
+  resolutionDeadline: bigint,
+  resolverAddress: string,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+  initialLiquidity: bigint,
+): { functionName: string; inputs: string[]; programId: string } {
+  const inputs = [
+    questionHash,
+    `${category}u8`,
+    `${numOutcomes}u8`,
+    `${deadline}u64`,
+    `${resolutionDeadline}u64`,
+    resolverAddress,
+    `${initialLiquidity}u128`,
+  ];
+
+  const functionName = tokenType === 'USAD' ? 'create_market_usad'
+    : tokenType === 'USDCX' ? 'create_market_usdcx'
+    : 'create_market';
+
+  return {
+    functionName,
+    inputs,
+    programId: getProgramIdForToken(tokenType),
+  };
+}
+
+/**
+ * Build inputs for buy_shares (v30 AMM trading)
+ * ETH: buy_shares_private(market_id, outcome, amount_in, expected_shares, min_shares_out, share_nonce, credits_in)
+ *   Uses transfer_private_to_public with credits record for privacy.
+ * USDCX: buy_shares_usdcx(market_id, outcome, amount_in, expected_shares, min_shares_out, share_nonce)
+ *   Caller appends Token.record + [MerkleProof; 2].
+ * Frontend pre-computes expected_shares from AMM formula. Record gets this value.
+ * Finalize validates shares_out >= expected_shares.
+ */
+export function buildBuySharesInputs(
+  marketId: string,
+  outcome: number,
+  amountIn: bigint,
+  expectedShares: bigint,
+  minSharesOut: bigint,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+  creditsRecord?: string,
+): { functionName: string; inputs: string[]; programId: string } {
+  const shareNonce = generateRandomNonce();
+
+  const baseInputs = [
+    marketId,
+    `${outcome}u8`,
+    `${amountIn}u128`,
+    `${expectedShares}u128`,
+    `${minSharesOut}u128`,
+    shareNonce,
+  ];
+
+  if (tokenType === 'USAD') {
+    // buy_shares_usad — caller appends Token record + MerkleProof
+    return {
+      functionName: 'buy_shares_usad',
+      inputs: baseInputs,
+      programId: getProgramIdForToken('USAD'),
+    };
+  }
+
+  if (tokenType === 'USDCX') {
+    // v31: buy_shares_usdcx — PRIVATE with Token record + MerkleProof
+    // Token record and MerkleProof are appended by the caller (findTokenRecord + buildDefaultMerkleProofs)
+    return {
+      functionName: 'buy_shares_usdcx',
+      inputs: baseInputs, // Token record + MerkleProof added by caller
+      programId: getProgramIdForToken('USDCX'),
+    };
+  }
+
+  // ETH: buy_shares_private requires credits record
+  if (!creditsRecord) {
+    throw new Error('Credits record is required for ETH buy_shares_private. Fetch a record via fetchCreditsRecord() first.');
+  }
+  baseInputs.push(creditsRecord);
+  return {
+    functionName: 'buy_shares_private',
+    inputs: baseInputs,
+    programId: getProgramIdForToken('ETH'),
+  };
+}
+
+/**
+ * Build inputs for buy_shares_private (v30 privacy-preserving, ETH only)
+ * Alias for buildBuySharesInputs with tokenType='ETH'.
+ */
+export function buildBuySharesPrivateInputs(
+  marketId: string,
+  outcome: number,
+  amountIn: bigint,
+  expectedShares: bigint,
+  minSharesOut: bigint,
+  creditsRecord: string,
+): { functionName: string; inputs: string[] } {
+  return buildBuySharesInputs(marketId, outcome, amountIn, expectedShares, minSharesOut, 'ETH', creditsRecord);
+}
+
+/**
+ * Build default Merkle proofs for USDCX freeze-list non-inclusion.
+ * Proves the sender is NOT in the freeze list (Sealance sorted Merkle tree).
+ *
+ * The freeze list tree has one entry: the zero address (0field) at index 0.
+ * Root = hash.psd4([1field, 0field, 0field]) = 3642222...853field
+ *
+ * Both proofs use leaf_index=1 (NOT 0). This triggers the "address is greater
+ * than the last entry" path in verify_non_inclusion. With leaf_index=0, the
+ * contract checks owner < siblings[0] which fails for any real address.
+ *
+ * Each MerkleProof: { siblings: [field; 16], leaf_index: u32 }
+ * 2 identical proofs required (same-index non-inclusion).
+ */
+export function buildDefaultMerkleProofs(): string {
+  const zeros = Array(16).fill('0field').join(', ');
+  const proof = `{ siblings: [${zeros}], leaf_index: 1u32 }`;
+  return `[${proof}, ${proof}]`;
+}
+
+/**
+ * Build default flattened Merkle proofs for buy_shares_usdcx (v30).
+ * Returns array of 2 proof objects with siblings and leafIndex separated,
+ * for the flattened input format that bypasses snarkVM parser bug.
+ */
+export function buildDefaultFlattenedMerkleProofs(): { siblings: string[]; leafIndex: number }[] {
+  const zeros = Array(16).fill('0field');
+  return [
+    { siblings: zeros, leafIndex: 1 },
+    { siblings: zeros, leafIndex: 1 },
+  ];
+}
+
+/**
+ * Build dynamic Merkle proofs using the Sealance SDK.
+ * Generates correct non-inclusion proofs for any freeze list state.
+ * Falls back to buildDefaultMerkleProofs() if SDK fails.
+ *
+ * @param ownerAddress - The bettor's Fhenix address
+ * @param freezeListAddresses - Addresses in the freeze list (default: [zero address])
+ */
+export async function buildMerkleProofsForAddress(
+  ownerAddress: string,
+  freezeListAddresses: string[] = ['aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc'],
+): Promise<string> {
+  try {
+    const sdk = await import('@provablehq/sdk');
+    const sealance = new sdk.SealanceMerkleTree();
+
+    // Generate leaves (sorts, pads) — depth 16 gives [field; 16] siblings
+    const leaves = sealance.generateLeaves(freezeListAddresses, 16);
+    const tree = sealance.buildTree(leaves);
+
+    // Get adjacent leaf indices bounding the target address
+    const [leftIdx, rightIdx] = sealance.getLeafIndices(tree, ownerAddress);
+
+    // Generate sibling paths
+    const leftProof = sealance.getSiblingPath(tree, leftIdx, 16);
+    const rightProof = sealance.getSiblingPath(tree, rightIdx, 16);
+
+    // Format for Fhenix transaction
+    return sealance.formatMerkleProof([leftProof, rightProof]);
+  } catch (error) {
+    devWarn('SDK Merkle proof generation failed:', error);
+    throw new Error(
+      'Could not generate stablecoin compliance proofs for this wallet session. ' +
+      'Please reconnect your wallet and try again.'
+    );
+  }
+}
+
+/**
+ * Build inputs for sell_shares (v30 tokens_desired approach)
+ * sell_shares(shares: OutcomeShare, tokens_desired, max_shares_used)
+ * User specifies how many tokens to withdraw. Contract computes shares needed.
+ * Transition calls credits.aleo/transfer_public for the net payout.
+ */
+export function buildSellSharesInputs(
+  sharesRecord: string,
+  tokensDesired: bigint,
+  maxSharesUsed: bigint,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+): { functionName: string; inputs: string[]; programId: string } {
+  const inputs = [
+    sharesRecord,
+    `${tokensDesired}u128`,
+    `${maxSharesUsed}u128`,
+  ];
+
+  const functionName = tokenType === 'USAD' ? 'sell_shares_usad'
+    : tokenType === 'USDCX' ? 'sell_shares_usdcx'
+    : 'sell_shares';
+
+  return {
+    functionName,
+    inputs,
+    programId: getProgramIdForToken(tokenType),
+  };
+}
+
+/**
+ * Build inputs for add_liquidity (v30 LP provision)
+ * add_liquidity(market_id, amount, expected_lp_shares, lp_nonce)
+ * Frontend pre-computes expected_lp_shares. LPToken record gets this value.
+ */
+export function buildAddLiquidityInputs(
+  marketId: string,
+  amount: bigint,
+  expectedLpShares: bigint,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+): { functionName: string; inputs: string[]; programId: string } {
+  const lpNonce = generateRandomNonce();
+
+  const inputs = [
+    marketId,
+    `${amount}u128`,
+    `${expectedLpShares}u128`,
+    lpNonce,
+  ];
+
+  const functionName = tokenType === 'USAD' ? 'add_liquidity_usad'
+    : tokenType === 'USDCX' ? 'add_liquidity_usdcx'
+    : 'add_liquidity';
+
+  return {
+    functionName,
+    inputs,
+    programId: getProgramIdForToken(tokenType),
+  };
+}
+
+// remove_liquidity removed in v31 — LP locked until finalize/cancel
+// Use withdraw_lp_resolved (resolved markets) or claim_lp_refund (cancelled markets)
+
+/**
+ * Build inputs for dispute_resolution (v30 - bond always in ETH)
+ * dispute_resolution(market_id, proposed_outcome, dispute_nonce)
+ * Dispute bond uses credits.aleo/transfer_public_as_signer regardless of market token type.
+ */
+export function buildDisputeResolutionInputs(
+  marketId: string,
+  proposedOutcome: number,
+): { functionName: string; inputs: string[] } {
+  const disputeNonce = generateRandomNonce();
+
+  const inputs = [
+    marketId,
+    `${proposedOutcome}u8`,
+    disputeNonce,
+  ];
+
+  return {
+    functionName: 'dispute_resolution',
+    inputs,
+  };
+}
+
+// Legacy aliases for backward compatibility
+export function buildPlaceBetInputs(
+  marketId: string,
+  amount: bigint,
+  outcome: 'yes' | 'no',
+  expectedShares: bigint = 0n,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+  creditsRecord?: string,
+): { functionName: string; inputs: string[] } {
+  return buildBuySharesInputs(marketId, outcome === 'yes' ? 1 : 2, amount, expectedShares, 0n, tokenType, creditsRecord);
+}
+
+export function buildPlaceBetPrivateInputs(
+  marketId: string,
+  amount: bigint,
+  outcome: 'yes' | 'no',
+  expectedShares: bigint,
+  creditsRecord: string,
+): { functionName: string; inputs: string[] } {
+  return buildBuySharesInputs(marketId, outcome === 'yes' ? 1 : 2, amount, expectedShares, 0n, 'ETH', creditsRecord);
+}
+
+/**
+ * Calculate outcome price from AMM pool (v30 FPMM)
+ * For FPMM: price_i = product(r_j for j!=i) / sum_of_products
+ * Binary simplification: price_i = r_other / (r1 + r2)
+ */
+export function calculateOutcomePrice(pool: AMMPoolData, outcome: number): number {
+  const reserves = [pool.reserve_1, pool.reserve_2, pool.reserve_3, pool.reserve_4];
+  // Determine active reserves (non-zero or first 2 for binary)
+  const numOutcomes = pool.reserve_3 > 0n ? (pool.reserve_4 > 0n ? 4 : 3) : 2;
+  const active = reserves.slice(0, numOutcomes);
+  const total = active.reduce((a, b) => a + b, 0n);
+  if (total === 0n) return 50;
+
+  if (numOutcomes === 2) {
+    // Binary: price_i = r_other / total
+    const idx = outcome - 1;
+    const otherIdx = idx === 0 ? 1 : 0;
+    return Number((active[otherIdx] * 10000n) / total) / 100;
+  }
+
+  // N-outcome: price_i = product(r_j, j!=i) / sum(product(r_j, j!=k) for each k)
+  const products: bigint[] = [];
+  for (let k = 0; k < numOutcomes; k++) {
+    let prod = 1n;
+    for (let j = 0; j < numOutcomes; j++) {
+      if (j !== k) prod = prod * active[j];
+    }
+    products.push(prod);
+  }
+  const sumProducts = products.reduce((a, b) => a + b, 0n);
+  if (sumProducts === 0n) return 100 / numOutcomes;
+  const idx = outcome - 1;
+  return Number((products[idx] * 10000n) / sumProducts) / 100;
+}
+
+// Legacy aliases
+export function calculateYesProbability(yesPool: bigint, noPool: bigint): number {
+  const total = yesPool + noPool;
+  if (total === 0n) return 50;
+  return Number((yesPool * 10000n) / total) / 100;
+}
+
+export function calculatePotentialPayout(
+  betOnYes: boolean,
+  yesPool: bigint,
+  noPool: bigint
+): number {
+  // In v12 AMM model, winning shares redeem 1:1.
+  // This legacy function returns a rough multiplier.
+  const totalPool = yesPool + noPool;
+  const winningPool = betOnYes ? yesPool : noPool;
+  if (winningPool === 0n) return 0;
+  const grossMultiplier = Number(totalPool * 10000n / winningPool) / 10000;
+  const feeMultiplier = Number(FEES.FEE_DENOMINATOR - FEES.TOTAL_FEE_BPS) / Number(FEES.FEE_DENOMINATOR);
+  return grossMultiplier * feeMultiplier;
+}
+
+/**
+ * Build Commitment struct input string for reveal_bet
+ * Format: "{ hash: Xfield, nonce: Xfield, market_id: Xfield, bettor: aleoX, committed_at: 0u64 }"
+ * committed_at is 0u64 because the transition value is always 0 (finalize updates it)
+ * reveal_bet doesn't check committed_at
+ */
+export function buildCommitmentStructInput(
+  hash: string,
+  nonce: string,
+  marketId: string,
+  bettor: string,
+): string {
+  return `{ hash: ${hash}, nonce: ${nonce}, market_id: ${marketId}, bettor: ${bettor}, committed_at: 0u64 }`;
+}
+
+/**
+ * Verify a commitment exists on-chain by checking the bet_commitments mapping
+ */
+export async function verifyCommitmentOnChain(commitmentHash: string): Promise<boolean> {
+  try {
+    const data = await getMappingValue<any>('bet_commitments', commitmentHash);
+    return data !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build inputs for close_market transaction
+ */
+export function buildCloseMarketInputs(marketId: string): string[] {
+  return [marketId];
+}
+
+/**
+ * v33: Build inputs for submit_outcome (Open Voting + Bond)
+ * Anyone can submit outcome with MIN_RESOLUTION_BOND (1 ETH)
+ */
+export function buildSubmitOutcomeInputs(
+  marketId: string,
+  proposedOutcome: number,
+  bondNonce: string,
+): string[] {
+  return [marketId, `${proposedOutcome}u8`, bondNonce];
+}
+
+/**
+ * v34: Build inputs for dispute_resolution (Multi-Voter Quorum)
+ * dispute_resolution(market_id, proposed_outcome, dispute_nonce, credits_in, dispute_bond)
+ */
+export function buildChallengeOutcomeInputs(
+  marketId: string,
+  proposedOutcome: number,
+  bondAmount: bigint,
+  bondNonce: string,
+): string[] {
+  // v34: order is market_id, outcome, nonce — credits_in and bond_amount appended by caller
+  return [marketId, `${proposedOutcome}u8`, bondNonce];
+}
+
+/**
+ * v33: Build inputs for finalize_outcome
+ */
+export function buildFinalizeOutcomeInputs(marketId: string): string[] {
+  return [marketId];
+}
+
+/**
+ * Legacy: Build inputs for resolve_market (kept for old contract versions)
+ */
+export function buildResolveMarketInputs(
+  marketId: string,
+  winningOutcome: number | 'yes' | 'no',
+): string[] {
+  // Support legacy 'yes'/'no' strings and numeric outcomes
+  const outcomeNum = typeof winningOutcome === 'string'
+    ? (winningOutcome === 'yes' ? 1 : 2)
+    : winningOutcome;
+  return [
+    marketId,
+    `${outcomeNum}u8`,
+  ];
+}
+
+/**
+ * Build inputs for finalize_resolution (v12 - after challenge window)
+ */
+export function buildFinalizeResolutionInputs(marketId: string): string[] {
+  return [marketId];
+}
+
+/**
+ * Build inputs for withdraw_creator_fees (v30)
+ * withdraw_creator_fees(market_id, expected_amount) — ETH
+ * withdraw_fees_usdcx(market_id, expected_amount) — USDCX
+ * Transition calls transfer_public with expected_amount, finalize validates.
+ */
+export function buildWithdrawCreatorFeesInputs(
+  marketId: string,
+  expectedAmount: bigint,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+): { functionName: string; inputs: string[] } {
+  return {
+    functionName: tokenType === 'USDCX' ? 'withdraw_fees_usdcx' : 'withdraw_creator_fees',
+    inputs: [marketId, `${expectedAmount}u128`],
+  };
+}
+
+/**
+ * Build inputs for cancel_market transaction
+ */
+export function buildCancelMarketInputs(marketId: string): string[] {
+  return [marketId];
+}
+
+/**
+ * Build inputs for emergency cancel via cancel_market (v30)
+ * In v31, cancel_market handles both creator cancel (active, no volume)
+ * and emergency cancel (anyone, past resolution_deadline).
+ * Same inputs as buildCancelMarketInputs.
+ */
+export function buildEmergencyCancelInputs(marketId: string): string[] {
+  return [marketId];
+}
+
+/**
+ * Format block height to approximate date
+ */
+export function blockHeightToDate(blockHeight: bigint, currentHeight: bigint): Date {
+  const blocksRemaining = Number(blockHeight - currentHeight);
+  const msRemaining = blocksRemaining * config.msPerBlock;
+  return new Date(Date.now() + msRemaining);
+}
+
+/**
+ * Format time remaining from block height
+ */
+export function formatTimeRemaining(deadlineBlock: bigint, currentBlock: bigint): string {
+  const blocksRemaining = Number(deadlineBlock - currentBlock);
+  if (blocksRemaining <= 0) return 'Ended';
+
+  const secondsRemaining = blocksRemaining * config.secondsPerBlock;
+  const days = Math.floor(secondsRemaining / 86400);
+  const hours = Math.floor((secondsRemaining % 86400) / 3600);
+  const minutes = Math.floor((secondsRemaining % 3600) / 60);
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/**
+ * Get transaction URL on explorer
+ */
+export function getTransactionUrl(transactionId: string): string {
+  return `${config.explorerUrl}/transaction/${transactionId}`;
+}
+
+/**
+ * Look up a transaction on-chain and check if it was rejected (finalize failed).
+ * Returns diagnostic info for failed transactions.
+ */
+export async function diagnoseTransaction(txId: string): Promise<{
+  found: boolean;
+  status: 'accepted' | 'rejected' | 'unknown';
+  type?: string;
+  functions?: string[];
+  message?: string;
+}> {
+  if (!txId.startsWith('at1')) {
+    return { found: false, status: 'unknown', message: 'Not an on-chain transaction ID (UUID from wallet)' };
+  }
+  try {
+    const resp = await fetch(`${config.rpcUrl}/transaction/${txId}`);
+    if (!resp.ok) {
+      return { found: false, status: 'unknown', message: `API returned ${resp.status}` };
+    }
+    const data = await resp.json();
+    const txType = data?.type;
+
+    // Check for rejected status — Fhenix marks failed finalize as "rejected" type
+    if (txType === 'rejected') {
+      const functions: string[] = [];
+      const transitions = data?.execution?.transitions || [];
+      for (const t of transitions) {
+        if (t.program && t.function) functions.push(`${t.program}/${t.function}`);
+      }
+      return {
+        found: true,
+        status: 'rejected',
+        type: txType,
+        functions,
+        message: 'Transaction was included on-chain but finalize ABORTED. ' +
+          'Most likely cause: transfer_public_as_signer failed (insufficient public balance after fee deduction).',
+      };
+    }
+
+    if (txType === 'execute') {
+      return { found: true, status: 'accepted', type: txType };
+    }
+
+    return { found: true, status: 'unknown', type: txType };
+  } catch (err) {
+    return { found: false, status: 'unknown', message: String(err) };
+  }
+}
+
+/**
+ * Get program URL on explorer
+ */
+export function getProgramUrl(): string {
+  return `${config.explorerUrl}/program/${PROGRAM_ID}`;
+}
+
+/**
+ * Hash a string to field
+ * IMPORTANT: Fhenix field values must be decimal numbers, NOT hex strings
+ * The field modulus is approximately 2^253, so we use a portion of the hash
+ * to create a valid decimal field value
+ */
+export async function hashToField(input: string): Promise<string> {
+  // Use Web Crypto API for hashing
+  const encoder = new TextEncoder();
+  const data = encoder.encode(input);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+
+  // Convert hash bytes to a BigInt (take first 31 bytes = 248 bits to stay under field modulus ~2^253)
+  let hashBigInt = BigInt(0);
+  for (let i = 0; i < 31; i++) {
+    hashBigInt = (hashBigInt << BigInt(8)) | BigInt(hashArray[i]);
+  }
+
+  // Ensure it's positive and within field range
+  // Fhenix field modulus is approximately 8444461749428370424248824938781546531375899335154063827935233455917409239041
+  // We use a smaller range to be safe
+  const fieldModulus = BigInt('8444461749428370424248824938781546531375899335154063827935233455917409239040');
+  hashBigInt = hashBigInt % fieldModulus;
+
+  // Ensure non-zero (0field might cause issues)
+  if (hashBigInt === BigInt(0)) {
+    hashBigInt = BigInt(1);
+  }
+
+  devLog('hashToField input:', input);
+  devLog('hashToField result:', `${hashBigInt.toString()}field`);
+
+  return `${hashBigInt.toString()}field`;
+}
+
+/**
+ * Known market IDs - Loaded dynamically from indexer or localStorage
+ * Start with empty array - markets will be added when created via the UI
+ * These are persisted in localStorage to survive page reloads
+ */
+let KNOWN_MARKET_IDS: string[] = [];
+
+// Load saved market IDs from localStorage on module load
+if (typeof window !== 'undefined') {
+  try {
+    const saved = localStorage.getItem('veiled_markets_ids');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        KNOWN_MARKET_IDS = parsed;
+        devLog('Loaded', KNOWN_MARKET_IDS.length, 'market IDs from localStorage');
+      }
+    }
+  } catch (e) {
+    devWarn('Failed to load market IDs from localStorage:', e);
+  }
+}
+
+/**
+ * Add a new market ID to the known list and persist to localStorage
+ */
+export function addKnownMarketId(marketId: string): void {
+  if (!KNOWN_MARKET_IDS.includes(marketId)) {
+    KNOWN_MARKET_IDS.push(marketId);
+    // Persist to localStorage
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('veiled_markets_ids', JSON.stringify(KNOWN_MARKET_IDS));
+        devLog('Saved market ID to localStorage:', marketId);
+      } catch (e) {
+        devWarn('Failed to save market IDs to localStorage:', e);
+      }
+    }
+  }
+}
+
+/**
+ * Resolve a market from a known on-chain transaction ID.
+ * Fetches the TX, extracts market_id from the future output, registers everything.
+ * Returns the market_id or null.
+ */
+export async function resolveMarketFromTransaction(
+  transactionId: string,
+  questionText?: string,
+  programId?: string,
+): Promise<string | null> {
+  if (!transactionId.startsWith('at1')) return null;
+
+  try {
+    const url = `${API_BASE_URL}/transaction/${transactionId}`;
+    const response = await fetchWithRetry(url);
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const transitions = data.execution?.transitions || [];
+    const candidatePrograms = new Set(getCreateMarketProgramIds(programId));
+
+    for (const transition of transitions) {
+      if (!candidatePrograms.has(transition.program) || !isCreateMarketFunction(transition.function)) continue;
+
+      for (const output of (transition.outputs || [])) {
+        if (output.type !== 'future') continue;
+
+        const args = extractFinalizeArguments(output.value || '');
+        if (args.length >= 3) {
+          const marketId = args[0];
+          const questionHash = args[2];
+
+          if (marketId) {
+            devLog('[resolveFromTx] Found market_id:', marketId.slice(0, 30) + '...');
+            addKnownMarketId(marketId);
+            if (questionText) {
+              registerQuestionText(marketId, questionText);
+              registerQuestionText(questionHash, questionText);
+            }
+            registerMarketTransaction(marketId, transactionId);
+            return marketId;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    devWarn('[resolveFromTx] Error:', err);
+  }
+
+  return null;
+}
+
+// ============================================================================
+// PENDING MARKETS — Auto-resolve on Dashboard load
+// ============================================================================
+// When a market is created via wallet, the market ID isn't known immediately.
+// We save the question hash + tx ID as "pending". On next page load,
+// the Dashboard resolves pending markets via blockchain scan.
+// ============================================================================
+
+interface PendingMarket {
+  questionHash: string
+  questionText: string
+  transactionId: string   // wallet event ID (shield_, UUID, or at1...)
+  programId?: string
+  tokenType?: 'ETH' | 'USDCX' | 'USAD'
+  createdAt: number
+  retryCount?: number     // number of scan attempts (auto-remove after MAX_PENDING_RETRIES)
+  status?: 'pending' | 'scanning' | 'likely_failed'
+}
+
+export function savePendingMarket(pending: PendingMarket): void {
+  if (typeof window === 'undefined') return
+  try {
+    const saved = localStorage.getItem('veiled_markets_pending')
+    const list: PendingMarket[] = saved ? JSON.parse(saved) : []
+    const existingIndex = list.findIndex(p => p.questionHash === pending.questionHash)
+    const nextEntry: PendingMarket = {
+      ...pending,
+      retryCount: 0,
+      status: 'pending',
+    }
+
+    if (existingIndex >= 0) {
+      list[existingIndex] = nextEntry
+      devLog('[Pending] Refreshed pending market:', pending.questionHash.slice(0, 20) + '...')
+    } else {
+      list.push(nextEntry)
+      devLog('[Pending] Saved pending market:', pending.questionHash.slice(0, 20) + '...')
+    }
+
+    localStorage.setItem('veiled_markets_pending', JSON.stringify(list))
+  } catch (e) {
+    devWarn('[Pending] Failed to save:', e)
+  }
+}
+
+function removePendingMarket(questionHash: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    const saved = localStorage.getItem('veiled_markets_pending')
+    if (!saved) return
+    const list: PendingMarket[] = JSON.parse(saved)
+    const filtered = list.filter(p => p.questionHash !== questionHash)
+    localStorage.setItem('veiled_markets_pending', JSON.stringify(filtered))
+  } catch { /* ignore */ }
+}
+
+/**
+ * Update a pending market's transaction ID (e.g., when wallet polling resolves the at1... ID).
+ * This allows resolvePendingMarkets to use resolveMarketFromTransaction directly.
+ */
+export function updatePendingMarketTxId(questionHash: string, resolvedTxId: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    const saved = localStorage.getItem('veiled_markets_pending')
+    if (!saved) return
+    const list: PendingMarket[] = JSON.parse(saved)
+    const entry = list.find(p => p.questionHash === questionHash)
+    if (entry && !entry.transactionId.startsWith('at1') && resolvedTxId.startsWith('at1')) {
+      entry.transactionId = resolvedTxId
+      localStorage.setItem('veiled_markets_pending', JSON.stringify(list))
+      devLog('[Pending] Updated TX ID:', questionHash.slice(0, 20), '→', resolvedTxId.slice(0, 20))
+    }
+  } catch { /* ignore */ }
+}
+
+/**
+ * Clear all pending markets (used when switching program versions)
+ */
+export function clearPendingMarkets(): void {
+  if (typeof window === 'undefined') return
+  localStorage.removeItem('veiled_markets_pending')
+}
+
+/**
+ * Clear ALL stale data from localStorage and Supabase.
+ * Used when upgrading to a new program version (e.g., v12 → v13).
+ * Clears: pending markets, cached market IDs, question texts, TX mappings,
+ * and all Supabase tables (market_registry, user_bets, pending_bets, commitment_records).
+ */
+export async function clearAllStaleData(): Promise<string> {
+  const cleared: string[] = []
+
+  // Clear localStorage
+  if (typeof window !== 'undefined') {
+    const keys = [
+      'veiled_markets_pending',
+      'veiled_markets_ids',
+      'veiled_markets_questions',
+      'veiled_markets_txs',
+      'veiled_markets_ipfs_cids',
+      'veiled_markets_outcome_labels',
+    ]
+    for (const key of keys) {
+      if (localStorage.getItem(key)) {
+        localStorage.removeItem(key)
+        cleared.push(`localStorage:${key}`)
+      }
+    }
+  }
+
+  // Clear in-memory caches
+  KNOWN_MARKET_IDS = []
+  Object.keys(QUESTION_TEXT_MAP).forEach(k => delete QUESTION_TEXT_MAP[k])
+  Object.keys(MARKET_TX_MAP).forEach(k => delete MARKET_TX_MAP[k])
+  Object.keys(MARKET_METADATA_MAP).forEach(k => delete MARKET_METADATA_MAP[k])
+  Object.keys(IPFS_CID_MAP).forEach(k => delete IPFS_CID_MAP[k])
+  Object.keys(OUTCOME_LABELS_MAP).forEach(k => delete OUTCOME_LABELS_MAP[k])
+  import('./ipfs').then(({ clearIPFSCache }) => clearIPFSCache()).catch(() => {})
+  cleared.push('in-memory caches')
+
+  // Clear Supabase
+  const { deleted, errors } = await clearAllSupabaseData()
+  cleared.push(...deleted.map(t => `supabase:${t}`))
+
+  const summary = `Cleared: ${cleared.join(', ')}${errors.length > 0 ? `. Errors: ${errors.join(', ')}` : ''}`
+  devLog('[ClearStaleData]', summary)
+  return summary
+}
+
+/**
+ * Check if there are any pending markets waiting for resolution
+ */
+export function hasPendingMarkets(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const saved = localStorage.getItem('veiled_markets_pending')
+    if (!saved) return false
+    const list: PendingMarket[] = JSON.parse(saved)
+    return list.length > 0
+  } catch {
+    return false
+  }
+}
+
+export interface PendingMarketInfo {
+  count: number
+  questions: string[]
+  statuses: Array<'pending' | 'scanning' | 'likely_failed'>
+  retryCounts: number[]
+}
+
+/**
+ * Get count and details of pending markets
+ */
+export function getPendingMarketsInfo(): PendingMarketInfo {
+  if (typeof window === 'undefined') return { count: 0, questions: [], statuses: [], retryCounts: [] }
+  try {
+    const saved = localStorage.getItem('veiled_markets_pending')
+    if (!saved) return { count: 0, questions: [], statuses: [], retryCounts: [] }
+    const list: PendingMarket[] = JSON.parse(saved)
+    return {
+      count: list.length,
+      questions: list.map(p => p.questionText),
+      statuses: list.map(p => p.status || 'pending'),
+      retryCounts: list.map(p => p.retryCount || 0),
+    }
+  } catch {
+    return { count: 0, questions: [], statuses: [], retryCounts: [] }
+  }
+}
+
+// Max scan attempts before marking as likely_failed
+const MAX_PENDING_RETRIES = 10
+// Max scan attempts before auto-removing (likely_failed + a few more)
+const MAX_PENDING_RETRIES_BEFORE_REMOVE = 15
+
+/**
+ * Resolve all pending markets via blockchain scan.
+ * Called on Dashboard load and periodically. Returns resolved market IDs.
+ * Tracks retry count per market — auto-removes after MAX_PENDING_RETRIES_BEFORE_REMOVE attempts.
+ */
+export async function resolvePendingMarkets(): Promise<string[]> {
+  if (typeof window === 'undefined') return []
+  try {
+    const saved = localStorage.getItem('veiled_markets_pending')
+    if (!saved) return []
+    const list: PendingMarket[] = JSON.parse(saved)
+    if (list.length === 0) return []
+
+    // Remove entries older than 24 hours (reduced from 7 days — most markets confirm in <5 min)
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000
+    // Also remove entries that exceeded max retries
+    const active = list.filter(p => {
+      if (p.createdAt < cutoff) {
+        devLog('[Pending] Auto-removing expired (>24h):', p.questionText.slice(0, 40))
+        return false
+      }
+      if ((p.retryCount || 0) >= MAX_PENDING_RETRIES_BEFORE_REMOVE) {
+        devLog('[Pending] Auto-removing after', p.retryCount, 'retries:', p.questionText.slice(0, 40))
+        return false
+      }
+      return true
+    })
+    if (active.length !== list.length) {
+      localStorage.setItem('veiled_markets_pending', JSON.stringify(active))
+    }
+    if (active.length === 0) return []
+
+    // Auto-dismiss pending markets whose question already exists in loaded markets.
+    // This handles the case where the market was found by background fetch but pending wasn't cleared.
+    const knownQuestions = new Set(
+      Object.values(QUESTION_TEXT_MAP).filter(Boolean).map(q => q.toLowerCase())
+    )
+    const stillPending = active.filter(p => {
+      if (knownQuestions.has(p.questionText.toLowerCase())) {
+        devLog('[Pending] Auto-dismissing (market already loaded):', p.questionText.slice(0, 40))
+        return false
+      }
+      return true
+    })
+    if (stillPending.length !== active.length) {
+      localStorage.setItem('veiled_markets_pending', JSON.stringify(stillPending))
+    }
+    if (stillPending.length === 0) return []
+
+    devLog(`[Pending] Resolving ${stillPending.length} pending market(s)...`)
+    const resolved: string[] = []
+
+    for (const pending of stillPending) {
+      // Skip markets already marked as likely_failed — they still show in banner but don't scan
+      if (pending.status === 'likely_failed') continue
+
+      // Increment retry count
+      pending.retryCount = (pending.retryCount || 0) + 1
+      pending.status = 'scanning'
+      let didResolve = false
+
+      try {
+        // First: if pending already has an on-chain tx ID, resolve directly from tx.
+        // This is faster and more reliable than block scanning.
+        let marketId: string | null = null
+        let realTxId: string = pending.transactionId
+        if (pending.transactionId.startsWith('at1')) {
+          marketId = await resolveMarketFromTransaction(
+            pending.transactionId,
+            pending.questionText,
+            pending.programId,
+          )
+        }
+
+        // Fallback: blockchain scan by question hash.
+        if (!marketId) {
+          // Use deeper scan for older pending markets
+          const ageMs = Date.now() - pending.createdAt
+          const blocksToScan = Math.min(2000, Math.max(500, Math.floor(ageMs / config.msPerBlock) + 200))
+          const candidatePrograms = getCreateMarketProgramIds(pending.programId)
+          for (const pid of candidatePrograms) {
+            const scanResult = await scanBlockchainForMarket(pending.questionHash, blocksToScan, pid)
+            if (scanResult) {
+              marketId = scanResult.marketId
+              realTxId = scanResult.transactionId || pending.transactionId
+              pending.programId = pid
+              break
+            }
+          }
+        }
+
+        if (marketId) {
+          didResolve = true
+          devLog('[Pending] Resolved:', pending.questionHash.slice(0, 20), '→', marketId.slice(0, 20), 'tx:', realTxId.slice(0, 15))
+          addKnownMarketId(marketId)
+          registerQuestionText(marketId, pending.questionText)
+          registerQuestionText(pending.questionHash, pending.questionText)
+          if (realTxId.startsWith('at1')) registerMarketTransaction(marketId, realTxId)
+          removePendingMarket(pending.questionHash)
+          resolved.push(marketId)
+
+          // Update Supabase: register with real market ID and real TX ID
+          try {
+            const supabaseMod = await import('./supabase')
+            if (supabaseMod.isSupabaseAvailable()) {
+              // Register with real market ID
+              await supabaseMod.registerMarketInRegistry({
+                market_id: marketId,
+                question_hash: pending.questionHash,
+                question_text: pending.questionText,
+                category: 0, // Unknown from pending context
+                creator_address: '',
+                transaction_id: realTxId,
+                created_at: pending.createdAt,
+              })
+              // Delete stale pending_ entry if it exists
+              if (supabaseMod.supabase) {
+                await supabaseMod.supabase.from('market_registry')
+                  .delete()
+                  .like('market_id', 'pending_%')
+                  .eq('question_hash', pending.questionHash)
+              }
+            }
+          } catch { /* ignore Supabase errors */ }
+        }
+      } catch (err) {
+        devWarn('[Pending] Failed to resolve:', pending.questionHash.slice(0, 20), err)
+      }
+
+      // Mark as likely_failed after MAX_PENDING_RETRIES if not resolved
+      if (!didResolve && pending.retryCount >= MAX_PENDING_RETRIES) {
+        pending.status = 'likely_failed'
+        devLog('[Pending] Marked as likely_failed after', pending.retryCount, 'attempts:', pending.questionText.slice(0, 40))
+      } else if (pending.status === 'scanning') {
+        pending.status = 'pending' // Reset from scanning back to pending
+      }
+    }
+
+    // Persist updated retry counts and statuses
+    localStorage.setItem('veiled_markets_pending', JSON.stringify(active))
+
+    return resolved
+  } catch (e) {
+    devWarn('[Pending] Failed to load pending markets:', e)
+    return []
+  }
+}
+
+/**
+ * Question text mapping (temporary - in production would use IPFS/storage)
+ * Maps question_hash OR market_id to actual question text
+ * Loaded from localStorage
+ */
+let QUESTION_TEXT_MAP: Record<string, string> = {};
+
+// Load saved question texts from localStorage
+if (typeof window !== 'undefined') {
+  try {
+    const saved = localStorage.getItem('veiled_markets_questions');
+    if (saved) {
+      QUESTION_TEXT_MAP = JSON.parse(saved);
+      devLog('Loaded question texts from localStorage');
+    }
+  } catch (e) {
+    devWarn('Failed to load question texts from localStorage:', e);
+  }
+}
+
+/**
+ * Register question text for a market ID or question hash
+ */
+export function registerQuestionText(key: string, questionText: string): void {
+  QUESTION_TEXT_MAP[key] = questionText;
+  // Persist to localStorage
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('veiled_markets_questions', JSON.stringify(QUESTION_TEXT_MAP));
+    } catch (e) {
+      devWarn('Failed to save question texts to localStorage:', e);
+    }
+  }
+}
+
+/**
+ * Transaction ID mapping (for verification links)
+ * Maps market_id to creation transaction ID
+ * Loaded from localStorage
+ */
+let MARKET_TX_MAP: Record<string, string> = {};
+
+// Load saved transaction IDs from localStorage
+if (typeof window !== 'undefined') {
+  try {
+    const saved = localStorage.getItem('veiled_markets_txs');
+    if (saved) {
+      MARKET_TX_MAP = JSON.parse(saved);
+      devLog('Loaded transaction IDs from localStorage');
+    }
+  } catch (e) {
+    devWarn('Failed to load transaction IDs from localStorage:', e);
+  }
+}
+
+/**
+ * Register transaction ID for a market
+ */
+export function registerMarketTransaction(marketId: string, transactionId: string): void {
+  MARKET_TX_MAP[marketId] = transactionId;
+  // Persist to localStorage
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('veiled_markets_txs', JSON.stringify(MARKET_TX_MAP));
+    } catch (e) {
+      devWarn('Failed to save transaction IDs to localStorage:', e);
+    }
+  }
+}
+
+/**
+ * Load market IDs from indexer service
+ * Returns empty array if indexer not available (user will create markets via UI)
+ * Also loads question texts from the index
+ */
+async function loadMarketIdsFromIndexer(): Promise<string[]> {
+  try {
+    const response = await fetch('/markets-index.json');
+    if (!response.ok) {
+      devLog('Indexer data not found - markets will be added when created via UI');
+      return KNOWN_MARKET_IDS; // Return current list (from localStorage)
+    }
+
+    const data = await response.json();
+    const marketIds = data.marketIds || [];
+    const markets = data.markets || [];
+
+    // Load question texts and outcome labels from indexed markets
+    for (const market of markets) {
+      const questionText = market.questionText || market.question;
+      const marketId = market.marketId || market.id;
+      if (questionText && marketId) {
+        // Register question text with both marketId and questionHash
+        QUESTION_TEXT_MAP[marketId] = questionText;
+        if (market.questionHash) {
+          QUESTION_TEXT_MAP[market.questionHash] = questionText;
+        }
+        devLog(`Loaded question text for ${marketId.slice(0, 16)}...`);
+      }
+      // Load outcome labels if present
+      if (marketId && market.outcomeLabels && Array.isArray(market.outcomeLabels)) {
+        OUTCOME_LABELS_MAP[marketId] = market.outcomeLabels;
+      }
+    }
+
+    // Persist merged question texts to localStorage
+    if (typeof window !== 'undefined' && markets.length > 0) {
+      try {
+        localStorage.setItem('veiled_markets_questions', JSON.stringify(QUESTION_TEXT_MAP));
+      } catch (e) {
+        devWarn('Failed to save question texts to localStorage:', e);
+      }
+    }
+
+    if (marketIds.length > 0) {
+      devLog(`✅ Loaded ${marketIds.length} markets from indexer`);
+      // Merge with existing IDs (in case some were created locally)
+      const allIds = new Set([...KNOWN_MARKET_IDS, ...marketIds]);
+      return Array.from(allIds);
+    }
+
+    return KNOWN_MARKET_IDS;
+  } catch (error) {
+    devLog('Indexer not available - using locally stored market IDs');
+    return KNOWN_MARKET_IDS;
+  }
+}
+
+/**
+ * Market metadata (description + resolution source + thumbnail) from Supabase registry.
+ * Maps market_id to { description, resolutionSource, thumbnailUrl }
+ */
+let MARKET_METADATA_MAP: Record<string, { description?: string; resolutionSource?: string; thumbnailUrl?: string }> = {};
+
+/**
+ * Get market description from registry
+ */
+export function getMarketDescription(marketId: string): string | null {
+  return MARKET_METADATA_MAP[marketId]?.description || null;
+}
+
+/**
+ * Get market resolution source from registry
+ */
+export function getMarketResolutionSource(marketId: string): string | null {
+  return MARKET_METADATA_MAP[marketId]?.resolutionSource || null;
+}
+
+/**
+ * Get market custom thumbnail URL from registry
+ */
+export function getMarketThumbnailUrl(marketId: string): string | null {
+  return MARKET_METADATA_MAP[marketId]?.thumbnailUrl || null;
+}
+
+/**
+ * Set market thumbnail URL in memory (immediate, before Supabase roundtrip)
+ */
+export function setMarketThumbnailUrl(marketId: string, url: string): void {
+  if (!MARKET_METADATA_MAP[marketId]) {
+    MARKET_METADATA_MAP[marketId] = {};
+  }
+  MARKET_METADATA_MAP[marketId].thumbnailUrl = url;
+}
+
+/**
+ * Load market registry from Supabase (shared across all users/devices).
+ * Also populates question text and transaction ID maps.
+ */
+async function loadMarketIdsFromSupabase(): Promise<string[]> {
+  if (!isSupabaseAvailable()) return [];
+  try {
+    const entries = await fetchMarketRegistry();
+    if (entries.length === 0) return [];
+
+    const ids: string[] = [];
+    const pendingToResolve: MarketRegistryEntry[] = [];
+
+    for (const entry of entries) {
+      // Pending entries have placeholder IDs like "pending_shield_xxx" or "pending_at1..."
+      // Queue them for resolution even if the wallet only stored a UUID/shield ID.
+      if (entry.market_id.startsWith('pending_')) {
+        if (entry.question_hash || entry.transaction_id) pendingToResolve.push(entry);
+        continue;
+      }
+      ids.push(entry.market_id);
+      // Populate question text mappings
+      if (entry.question_text) {
+        QUESTION_TEXT_MAP[entry.market_id] = entry.question_text;
+        if (entry.question_hash) {
+          QUESTION_TEXT_MAP[entry.question_hash] = entry.question_text;
+        }
+      }
+      // Populate transaction ID mappings
+      if (entry.transaction_id) {
+        MARKET_TX_MAP[entry.market_id] = entry.transaction_id;
+      }
+      // Populate metadata (description + resolution source + thumbnail)
+      if (entry.description || entry.resolution_source || entry.thumbnail_url) {
+        const meta = {
+          description: entry.description || undefined,
+          resolutionSource: entry.resolution_source || undefined,
+          thumbnailUrl: entry.thumbnail_url || undefined,
+        };
+        MARKET_METADATA_MAP[entry.market_id] = meta;
+        if (entry.question_hash) {
+          MARKET_METADATA_MAP[entry.question_hash] = meta;
+        }
+      }
+      // Populate IPFS CID mapping
+      if (entry.ipfs_cid) {
+        IPFS_CID_MAP[entry.market_id] = entry.ipfs_cid;
+        if (entry.question_hash) {
+          IPFS_CID_MAP[entry.question_hash] = entry.ipfs_cid;
+        }
+      }
+      // Populate outcome labels from Supabase
+      if (entry.outcome_labels) {
+        try {
+          const labels = JSON.parse(entry.outcome_labels);
+          if (Array.isArray(labels)) {
+            OUTCOME_LABELS_MAP[entry.market_id] = labels;
+            if (entry.question_hash) {
+              OUTCOME_LABELS_MAP[entry.question_hash] = labels;
+            }
+          }
+        } catch { /* invalid JSON, skip */ }
+      }
+    }
+
+    const applyResolvedRegistryEntry = (
+      entry: MarketRegistryEntry,
+      marketId: string,
+      transactionId: string,
+    ) => {
+      if (!KNOWN_MARKET_IDS.includes(marketId)) {
+        addKnownMarketId(marketId);
+      }
+      if (!ids.includes(marketId)) {
+        ids.push(marketId);
+      }
+
+      if (entry.question_text) {
+        QUESTION_TEXT_MAP[marketId] = entry.question_text;
+        if (entry.question_hash) {
+          QUESTION_TEXT_MAP[entry.question_hash] = entry.question_text;
+        }
+      }
+
+      if (transactionId) {
+        MARKET_TX_MAP[marketId] = transactionId;
+      }
+
+      if (entry.description || entry.resolution_source || entry.thumbnail_url) {
+        const meta = {
+          description: entry.description || undefined,
+          resolutionSource: entry.resolution_source || undefined,
+          thumbnailUrl: entry.thumbnail_url || undefined,
+        };
+        MARKET_METADATA_MAP[marketId] = meta;
+        if (entry.question_hash) {
+          MARKET_METADATA_MAP[entry.question_hash] = meta;
+        }
+      }
+
+      if (entry.ipfs_cid) {
+        IPFS_CID_MAP[marketId] = entry.ipfs_cid;
+        if (entry.question_hash) {
+          IPFS_CID_MAP[entry.question_hash] = entry.ipfs_cid;
+        }
+      }
+
+      if (entry.outcome_labels) {
+        try {
+          const labels = JSON.parse(entry.outcome_labels);
+          if (Array.isArray(labels)) {
+            OUTCOME_LABELS_MAP[marketId] = labels;
+            if (entry.question_hash) {
+              OUTCOME_LABELS_MAP[entry.question_hash] = labels;
+            }
+          }
+        } catch { /* invalid JSON, skip */ }
+      }
+    };
+
+    const resolvePendingRegistryEntry = async (
+      entry: MarketRegistryEntry,
+    ): Promise<{ marketId: string; transactionId: string } | null> => {
+      const questionText = entry.question_text || '';
+      const txId = entry.transaction_id || '';
+
+      if (txId.startsWith('at1')) {
+        const marketId = await resolveMarketFromTransaction(txId, questionText);
+        if (marketId) return { marketId, transactionId: txId };
+      }
+
+      if (!entry.question_hash) return null;
+
+      const ageMs = entry.created_at
+        ? Math.max(0, Date.now() - entry.created_at)
+        : 0;
+      const blocksToScan = Math.min(
+        2000,
+        Math.max(500, Math.floor(ageMs / config.msPerBlock) + 200),
+      );
+
+      for (const pid of getCreateMarketProgramIds()) {
+        const scanResult = await scanBlockchainForMarket(entry.question_hash, blocksToScan, pid);
+        if (scanResult) {
+          if (questionText) {
+            registerQuestionText(scanResult.marketId, questionText);
+            registerQuestionText(entry.question_hash, questionText);
+          }
+          registerMarketTransaction(scanResult.marketId, scanResult.transactionId);
+          return scanResult;
+        }
+      }
+
+      return null;
+    };
+
+    // Resolve pending Supabase entries in the background (non-blocking).
+    // Previously this was awaited sequentially, causing the dashboard to hang
+    // for minutes while scanning blocks for each pending market.
+    if (pendingToResolve.length > 0) {
+      devLog(`[Supabase] Scheduling background resolution of ${pendingToResolve.length} pending market(s)`);
+      const resolvePendingInBackground = async () => {
+        for (const entry of pendingToResolve.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))) {
+          try {
+            const resolved = await resolvePendingRegistryEntry(entry);
+            if (!resolved) continue;
+
+            const { marketId, transactionId } = resolved;
+            devLog('[Supabase] Resolved pending market:', marketId.slice(0, 20));
+            applyResolvedRegistryEntry(entry, marketId, transactionId);
+
+            await registerMarketInRegistry({
+              market_id: marketId,
+              question_hash: entry.question_hash,
+              question_text: entry.question_text,
+              description: entry.description,
+              resolution_source: entry.resolution_source,
+              thumbnail_url: entry.thumbnail_url,
+              category: entry.category,
+              creator_address: entry.creator_address,
+              transaction_id: transactionId,
+              created_at: entry.created_at,
+              ipfs_cid: entry.ipfs_cid,
+              outcome_labels: entry.outcome_labels,
+            }).catch(() => {});
+
+            if (supabase) {
+              await supabase.from('market_registry')
+                .delete()
+                .eq('market_id', entry.market_id)
+                .catch(() => {});
+            }
+          } catch (e) {
+            const ref = entry.transaction_id || entry.question_hash || entry.market_id;
+            devWarn('[Supabase] Failed to resolve pending market:', ref.slice(0, 20), e);
+          }
+        }
+      };
+      // Fire and forget — don't block market loading
+      resolvePendingInBackground().catch(e =>
+        devWarn('[Supabase] Background pending resolution failed:', e)
+      );
+    }
+
+    devLog(`[Supabase] Loaded ${ids.length} markets from registry`);
+    return ids;
+  } catch (error) {
+    devWarn('[Supabase] Failed to load market registry:', error);
+    return [];
+  }
+}
+
+/**
+ * Initialize market IDs (call this on app startup).
+ * Merges from 3 sources: localStorage, markets-index.json, and Supabase.
+ */
+export async function initializeMarketIds(): Promise<void> {
+  // Fetch from both sources in parallel
+  const [indexedIds, supabaseIds] = await Promise.all([
+    loadMarketIdsFromIndexer(),
+    loadMarketIdsFromSupabase(),
+  ]);
+
+  // Merge all sources: localStorage (already in KNOWN_MARKET_IDS), index file, Supabase
+  const allIds = new Set([...KNOWN_MARKET_IDS, ...indexedIds, ...supabaseIds]);
+  KNOWN_MARKET_IDS = Array.from(allIds);
+
+  // Persist merged data to localStorage
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('veiled_markets_questions', JSON.stringify(QUESTION_TEXT_MAP));
+      localStorage.setItem('veiled_markets_txs', JSON.stringify(MARKET_TX_MAP));
+      localStorage.setItem('veiled_markets_ids', JSON.stringify(KNOWN_MARKET_IDS));
+      localStorage.setItem('veiled_markets_ipfs_cids', JSON.stringify(IPFS_CID_MAP));
+      localStorage.setItem('veiled_markets_outcome_labels', JSON.stringify(OUTCOME_LABELS_MAP));
+    } catch (e) {
+      devWarn('Failed to persist merged data to localStorage:', e);
+    }
+  }
+
+  devLog(`[Markets] Initialized ${KNOWN_MARKET_IDS.length} total markets`);
+
+  // Fetch IPFS metadata for markets with CIDs but missing question text (non-blocking)
+  const cidsToFetch: Array<{ cid: string; keys: string[] }> = [];
+  for (const marketId of KNOWN_MARKET_IDS) {
+    const cid = IPFS_CID_MAP[marketId];
+    if (cid && !QUESTION_TEXT_MAP[marketId]) {
+      cidsToFetch.push({ cid, keys: [marketId] });
+    }
+  }
+
+  if (cidsToFetch.length > 0) {
+    import('./ipfs').then(async ({ fetchMultipleMetadata }) => {
+      const uniqueCids = [...new Set(cidsToFetch.map(c => c.cid))];
+      const results = await fetchMultipleMetadata(uniqueCids);
+
+      for (const [cid, metadata] of results) {
+        // Find all keys associated with this CID
+        for (const [key, value] of Object.entries(IPFS_CID_MAP)) {
+          if (value === cid) {
+            QUESTION_TEXT_MAP[key] = metadata.question;
+            if (metadata.questionHash) {
+              QUESTION_TEXT_MAP[metadata.questionHash] = metadata.question;
+            }
+            MARKET_METADATA_MAP[key] = {
+              description: metadata.description || undefined,
+              resolutionSource: metadata.resolutionSource || undefined,
+            };
+            if (metadata.outcomeLabels?.length > 0) {
+              OUTCOME_LABELS_MAP[key] = metadata.outcomeLabels;
+              if (metadata.questionHash) {
+                OUTCOME_LABELS_MAP[metadata.questionHash] = metadata.outcomeLabels;
+              }
+            }
+          }
+        }
+      }
+
+      // Re-persist after IPFS enrichment
+      if (typeof window !== 'undefined' && results.size > 0) {
+        try {
+          localStorage.setItem('veiled_markets_questions', JSON.stringify(QUESTION_TEXT_MAP));
+          localStorage.setItem('veiled_markets_outcome_labels', JSON.stringify(OUTCOME_LABELS_MAP));
+        } catch { /* ignore */ }
+      }
+      devLog(`[IPFS] Enriched ${results.size} markets from IPFS`);
+    }).catch(err => devWarn('[IPFS] Batch fetch failed:', err));
+  }
+}
+
+/**
+ * Outcome labels mapping
+ * Maps question_hash (or market_id) to array of custom outcome labels
+ * Loaded from localStorage
+ */
+let OUTCOME_LABELS_MAP: Record<string, string[]> = {};
+
+// Load saved outcome labels from localStorage
+if (typeof window !== 'undefined') {
+  try {
+    const saved = localStorage.getItem('veiled_markets_outcome_labels');
+    if (saved) {
+      OUTCOME_LABELS_MAP = JSON.parse(saved);
+      devLog('Loaded outcome labels from localStorage');
+    }
+  } catch (e) {
+    devWarn('Failed to load outcome labels from localStorage:', e);
+  }
+}
+
+/**
+ * Register outcome labels for a market (keyed by question hash or market ID)
+ */
+export function registerOutcomeLabels(key: string, labels: string[]): void {
+  const filtered = labels.filter(l => l.trim().length > 0);
+  if (filtered.length === 0) return;
+  OUTCOME_LABELS_MAP[key] = filtered;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('veiled_markets_outcome_labels', JSON.stringify(OUTCOME_LABELS_MAP));
+    } catch (e) {
+      devWarn('Failed to save outcome labels to localStorage:', e);
+    }
+  }
+}
+
+/**
+ * Get outcome labels for a market (by question hash or market ID)
+ */
+export function getOutcomeLabels(key: string): string[] | null {
+  return OUTCOME_LABELS_MAP[key] || null;
+}
+
+/**
+ * IPFS CID mapping
+ * Maps question_hash (or market_id) to IPFS CID for metadata retrieval
+ */
+let IPFS_CID_MAP: Record<string, string> = {};
+
+// Load saved IPFS CIDs from localStorage
+if (typeof window !== 'undefined') {
+  try {
+    const saved = localStorage.getItem('veiled_markets_ipfs_cids');
+    if (saved) {
+      IPFS_CID_MAP = JSON.parse(saved);
+      devLog('Loaded IPFS CIDs from localStorage');
+    }
+  } catch (e) {
+    devWarn('Failed to load IPFS CIDs from localStorage:', e);
+  }
+}
+
+/**
+ * Save IPFS CID for a market (keyed by question hash or market ID)
+ */
+export function saveIPFSCid(key: string, cid: string): void {
+  IPFS_CID_MAP[key] = cid;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('veiled_markets_ipfs_cids', JSON.stringify(IPFS_CID_MAP));
+    } catch (e) {
+      devWarn('Failed to save IPFS CID to localStorage:', e);
+    }
+  }
+}
+
+/**
+ * Get IPFS CID for a market (by question hash or market ID)
+ */
+export function getIPFSCid(key: string): string | null {
+  return IPFS_CID_MAP[key] || null;
+}
+
+/**
+ * Get question text from hash
+ */
+export function getQuestionText(questionHash: string): string {
+  return QUESTION_TEXT_MAP[questionHash] || `Market with hash ${questionHash.slice(0, 12)}...`;
+}
+
+/**
+ * Get transaction ID for market (for verification)
+ */
+export function getMarketTransactionId(marketId: string): string | null {
+  return MARKET_TX_MAP[marketId] || null;
+}
+
+/**
+ * Fetch all markets from blockchain (requires indexer in production)
+ * For now, fetches known market IDs manually
+ */
+export async function fetchAllMarkets(): Promise<Array<{
+  market: MarketData;
+  pool: MarketPoolData;
+  resolution?: MarketResolutionData;
+  marketCredits?: bigint;
+}>> {
+  devLog('fetchAllMarkets: Fetching known markets...');
+
+  const results = await Promise.all(
+    KNOWN_MARKET_IDS.map(id => fetchMarketById(id))
+  );
+
+  // Filter out nulls and return valid markets
+  return results.filter((r): r is NonNullable<typeof r> => r !== null);
+}
+
+/**
+ * Fetch complete market data by ID
+ */
+export async function fetchMarketById(marketId: string) {
+  try {
+    let [market, pool, resolution] = await Promise.all([
+      getMarket(marketId),
+      getMarketPool(marketId),
+      getMarketResolution(marketId),
+    ]);
+
+    // Fallback: try USAD programs and legacy program versions in parallel
+    let usedProgramId: string | undefined;
+    if (!market || !pool) {
+      const fallbackPids = [
+        config.usdcxMarketProgramId,
+        config.usadProgramId,
+        ...config.legacyUsadProgramIds,
+        ...config.legacyProgramIds,
+      ].filter(pid => pid && pid !== PROGRAM_ID);
+      // Deduplicate
+      const uniquePids = [...new Set(fallbackPids)];
+
+      // Fetch all fallback programs in parallel instead of sequentially
+      const fallbackResults = await Promise.all(
+        uniquePids.map(async (pid) => {
+          const [fbMarket, fbPool, fbResolution] = await Promise.all([
+            getMarket(marketId, pid),
+            getMarketPool(marketId, pid),
+            getMarketResolution(marketId, pid),
+          ]);
+          return { pid, fbMarket, fbPool, fbResolution };
+        })
+      );
+
+      // Use the first valid result
+      for (const { pid, fbMarket, fbPool, fbResolution } of fallbackResults) {
+        if (fbMarket && fbPool) {
+          market = fbMarket;
+          pool = fbPool;
+          resolution = fbResolution;
+          usedProgramId = pid;
+          break;
+        }
+      }
+    }
+
+    if (!market || !pool) {
+      return null;
+    }
+
+    // For resolved/cancelled markets, fetch actual remaining collateral
+    let marketCredits: bigint | undefined;
+    const status = market.status;
+    if (status === 3 || status === 4) { // RESOLVED or CANCELLED
+      const credits = await getMarketCredits(marketId, usedProgramId);
+      if (credits !== null) marketCredits = credits;
+    }
+
+    return {
+      market,
+      pool,
+      resolution: resolution || undefined,
+      marketCredits,
+    };
+  } catch (error) {
+    console.error(`Failed to fetch market ${marketId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get the correct redeem/refund function name based on token type (v30)
+ */
+export function getRedeemFunction(tokenType?: 'ETH' | 'USDCX' | 'USAD'): string {
+  if (tokenType === 'USAD') return 'redeem_shares_usad';
+  if (tokenType === 'USDCX') return 'redeem_shares_usdcx';
+  return 'redeem_shares';
+}
+
+export function getRefundFunction(tokenType?: 'ETH' | 'USDCX' | 'USAD'): string {
+  if (tokenType === 'USAD') return 'claim_refund_usad';
+  if (tokenType === 'USDCX') return 'claim_refund_usdcx';
+  return 'claim_refund';
+}
+
+export function getLpRefundFunction(tokenType?: 'ETH' | 'USDCX' | 'USAD'): string {
+  if (tokenType === 'USAD') return 'claim_lp_refund_usad';
+  if (tokenType === 'USDCX') return 'claim_lp_refund_usdcx';
+  return 'claim_lp_refund';
+}
+
+/**
+ * Build inputs for claim_lp_refund (v30 - LP refund on cancelled market)
+ * claim_lp_refund(lp_token: LPToken, min_tokens_out)
+ */
+export function buildClaimLpRefundInputs(
+  lpTokenRecord: string,
+  minTokensOut: bigint,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+): { functionName: string; inputs: string[]; programId: string } {
+  return {
+    functionName: getLpRefundFunction(tokenType),
+    inputs: [lpTokenRecord, `${minTokensOut}u128`],
+    programId: getProgramIdForToken(tokenType),
+  };
+}
+
+/**
+ * Build inputs for withdraw_lp_resolved (v24 - LP withdrawal from resolved/finalized market)
+ * withdraw_lp_resolved(lp_token: LPToken, min_tokens_out: u128)
+ */
+export function buildWithdrawLpResolvedInputs(
+  lpTokenRecord: string,
+  minTokensOut: bigint,
+  tokenType: 'ETH' | 'USDCX' | 'USAD' = 'ETH',
+): { functionName: string; inputs: string[]; programId: string } {
+  const functionName = tokenType === 'USAD' ? 'withdraw_lp_resolved_usad'
+    : tokenType === 'USDCX' ? 'withdraw_lp_resolved_usdcx'
+    : 'withdraw_lp_resolved';
+  return {
+    functionName,
+    inputs: [lpTokenRecord, `${minTokensOut}u128`],
+    programId: getProgramIdForToken(tokenType),
+  };
+}
+
+// Legacy alias
+export const getWithdrawFunction = getRedeemFunction;
+
+// Export a singleton instance info
+export const CONTRACT_INFO = {
+  programId: config.programId,
+  usdcxProgramId: config.usdcxProgramId,
+  usadProgramId: config.usadProgramId,
+  network: 'testnet',
+  explorerUrl: config.explorerUrl,
+  useMockData: false,
+};
