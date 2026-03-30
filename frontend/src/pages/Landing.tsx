@@ -640,7 +640,12 @@ export function Landing() {
       // Mark as user-initiated, then trigger Privy login modal
       userInitiatedLogin.current = true
       const privyLogin = (window as any).__privyLogin
-      if (privyLogin) privyLogin()
+      if (privyLogin) {
+        privyLogin()
+      } else {
+        console.error('[Landing] __privyLogin not available. Privy may not have initialized.')
+        console.log('[Landing] Privy app ID:', import.meta.env.VITE_PRIVY_APP_ID || 'MISSING — using fallback')
+      }
     }
   }, [navigate, wallet.connected])
 

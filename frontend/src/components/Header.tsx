@@ -243,8 +243,12 @@ export function Header() {
                 <button
                   onClick={() => {
                     const privyLogin = (window as any).__privyLogin
-                    if (privyLogin) privyLogin()
-                    else setVisible(true)
+                    if (privyLogin) {
+                      privyLogin()
+                    } else {
+                      console.error('[Header] __privyLogin not available. Privy not initialized.')
+                      setVisible(true)
+                    }
                   }}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm active:scale-[0.96] transition-all duration-200"
                   style={{
