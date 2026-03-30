@@ -79,6 +79,11 @@ export function PrivyWalletBridge() {
       // Load user bets for this address
       useBetsStore.getState().loadBetsForAddress(address)
 
+      // Fetch ETH balance
+      setTimeout(() => {
+        useWalletStore.getState().refreshBalance()
+      }, 500)
+
       // Notify main app tree that wallet connected (for navigation)
       if (isFirstConnect) {
         window.dispatchEvent(new CustomEvent('privy:connected', { detail: { address } }))

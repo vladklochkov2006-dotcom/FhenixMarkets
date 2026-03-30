@@ -62,17 +62,28 @@ export async function lookupWalletTransactionStatus(txId: string): Promise<Walle
  * Returns balance in wei as bigint.
  */
 export async function fetchPublicBalance(address: string): Promise<bigint> {
+  // Try Privy provider first, then fallback to public RPC
   try {
     const getProvider = (window as any).__privyGetProvider;
     if (typeof getProvider === 'function') {
       const provider = await getProvider();
       const balance = await provider.getBalance(address);
+      devLog('[wallet] Balance via Privy provider:', balance.toString());
       return BigInt(balance.toString());
     }
-    devLog('[wallet] No Privy provider available for balance fetch');
-    return 0n;
   } catch (err) {
-    devWarn('[wallet] Failed to fetch ETH balance:', err);
+    devWarn('[wallet] Privy provider balance failed, trying public RPC:', err);
+  }
+
+  // Fallback: fetch from public RPC directly
+  try {
+    const { JsonRpcProvider } = await import('ethers');
+    const pub = new JsonRpcProvider('https://ethereum-sepolia.publicnode.com');
+    const balance = await pub.getBalance(address);
+    devLog('[wallet] Balance via public RPC:', balance.toString());
+    return BigInt(balance.toString());
+  } catch (err) {
+    devWarn('[wallet] Public RPC balance also failed:', err);
     return 0n;
   }
 }
