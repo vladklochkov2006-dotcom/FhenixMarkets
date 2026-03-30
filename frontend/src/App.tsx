@@ -1,9 +1,11 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Landing, Dashboard, MyBets, History, MarketDetail, Settings, Governance, CreateMarketPage, TermsOfService, PrivacyPolicy, RiskDisclosure, CookiesPolicy, HowItWorks, FAQ, APIDocs, BrandKit, BugBounty } from './pages'
-import { initializeMarketIds } from './lib/aleo-client'
+// initializeMarketIds removed — market IDs are now managed on-chain via Ethereum events
+const initializeMarketIds = async () => { /* no-op on Ethereum */ }
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { MobileNav } from './components/MobileNav'
+import { ProtectedRoute } from './components/ProtectedRoute'
 
 function App() {
   // Initialize market IDs from indexer on app startup
@@ -17,13 +19,13 @@ function App() {
         {/* Landing Page - shown when not connected */}
         <Route path="/" element={<Landing />} />
 
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/portfolio" element={<MyBets />} />
-        <Route path="/history" element={<History />} />
-        <Route path="/market/:marketId" element={<MarketDetail />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/governance" element={<Governance />} />
-        <Route path="/create" element={<CreateMarketPage />} />
+        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/portfolio" element={<ProtectedRoute><MyBets /></ProtectedRoute>} />
+        <Route path="/history" element={<ProtectedRoute><History /></ProtectedRoute>} />
+        <Route path="/market/:marketId" element={<ProtectedRoute><MarketDetail /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+        <Route path="/governance" element={<ProtectedRoute><Governance /></ProtectedRoute>} />
+        <Route path="/create" element={<ProtectedRoute><CreateMarketPage /></ProtectedRoute>} />
 
         {/* Resource Pages */}
         <Route path="/how-it-works" element={<HowItWorks />} />

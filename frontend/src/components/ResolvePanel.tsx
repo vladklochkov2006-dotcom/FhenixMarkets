@@ -13,23 +13,48 @@ import {
 } from 'lucide-react'
 import { useState, useEffect, useMemo } from 'react'
 import { type Market, useWalletStore } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
 import { cn, getTokenSymbol } from '@/lib/utils'
 import { devLog, devWarn } from '@/lib/logger'
 import {
-  buildCloseMarketInputs,
-  buildSubmitOutcomeInputs as buildVoteOutcomeInputs,
-  buildChallengeOutcomeInputs as buildDisputeInputs,
-  buildFinalizeOutcomeInputs as buildFinalizeVotesInputs,
-  getMarket,
-  getMarketResolution,
-  getCurrentBlockHeight,
+  closeMarket as contractCloseMarket,
+  voteOutcome as contractVoteOutcome,
+  disputeResolution as contractDispute,
+  finalizeVotes as contractFinalizeVotes,
+  confirmResolution as contractConfirmResolution,
+  claimVoterBond as contractClaimVoterBond,
+  parseContractError,
+  ensureSepoliaNetwork,
   MARKET_STATUS,
-  type MarketResolutionData,
-  getProgramIdForToken,
-} from '@/lib/aleo-client'
+  FEES,
+} from '@/lib/contracts'
+import { ethers } from 'ethers'
 import { TransactionLink } from './TransactionLink'
-import { config } from '@/lib/config'
+import { FHENIX_MARKETS_ADDRESS } from '@/lib/contracts'
+
+// Local type stub for MarketResolutionData
+type MarketResolutionData = {
+  winning_outcome: number
+  challenge_deadline: bigint
+  finalized: boolean
+  total_bonded?: bigint
+  [key: string]: unknown
+}
+
+// getCurrentBlockHeight — on Ethereum, use provider to get latest block
+async function getCurrentBlockHeight(): Promise<bigint> {
+  try {
+    const provider = new ethers.BrowserProvider((window as any).ethereum)
+    const blockNumber = await provider.getBlockNumber()
+    return BigInt(blockNumber)
+  } catch {
+    return 0n
+  }
+}
+
+// Stub for getProgramIdForToken — not needed on Ethereum but called in bond inspection
+function getProgramIdForToken(_tokenType: string = 'ETH'): string {
+  return FHENIX_MARKETS_ADDRESS
+}
 
 interface ResolvePanelProps {
   market: Market
@@ -63,109 +88,16 @@ interface MarketReceiptScanResult {
   spent: ParsedVoterBondReceipt | null
 }
 
-function parseVoterBondReceipt(text: string): ParsedVoterBondReceipt | null {
-  const plaintext = String(text)
-  if (!plaintext.includes('voted_outcome') || !plaintext.includes('bond_nonce')) return null
-
-  const marketMatch = plaintext.match(/market_id:\s*([0-9]+field)/)
-  const outcomeMatch = plaintext.match(/voted_outcome:\s*(\d+)u8/)
-  const ownerMatch = plaintext.match(/owner:\s*(aleo1[a-z0-9]+)/)
-
-  if (!marketMatch || !outcomeMatch) return null
-
-  return {
-    plaintext,
-    marketId: marketMatch[1] ?? null,
-    votedOutcome: Number(outcomeMatch[1]),
-    owner: ownerMatch?.[1] ?? null,
-  }
-}
-
-function isSpentRecord(record: any): boolean {
-  return record?.spent === true
-    || record?.is_spent === true
-    || record?.isSpent === true
-    || record?.status === 'spent'
-    || record?.status === 'Spent'
-    || record?.recordStatus === 'spent'
-    || record?.recordStatus === 'Spent'
-}
-
 async function inspectVoterBondReceiptsForMarket(
-  programId: string,
+  _programId: string,
   marketId: string,
   logPrefix: string = '[ClaimBond]',
 ): Promise<MarketReceiptScanResult> {
   let matchedUnspent: ParsedVoterBondReceipt | null = null
   let matchedSpent: ParsedVoterBondReceipt | null = null
-  const tryUseReceipt = (candidate: unknown, source: string, spent: boolean): boolean => {
-    const parsed = parseVoterBondReceipt(String(candidate ?? ''))
-    if (!parsed) return false
-    if (parsed.marketId !== marketId) {
-      devLog(`${logPrefix} Skipping ${source} receipt for different market:`, parsed.marketId)
-      return false
-    }
-    if (spent) {
-      if (!matchedSpent) {
-        matchedSpent = parsed
-        devLog(`${logPrefix} Found spent receipt from ${source} for market ${parsed.marketId}, outcome ${parsed.votedOutcome}`)
-      }
-      return Boolean(matchedUnspent)
-    }
-    matchedUnspent = parsed
-    devLog(`${logPrefix} Matched unspent receipt from ${source} for market ${parsed.marketId}, outcome ${parsed.votedOutcome}`)
-    return true
-  }
-
-  const adapterFn = (window as any).__aleoRequestRecords
-  if (!matchedUnspent && typeof adapterFn === 'function') {
-    try {
-      devLog(`${logPrefix} Strategy 1: adapter requestRecords(programId, true)`)
-      const records = await adapterFn(programId, true)
-      const arr = Array.isArray(records) ? records : (records?.records || [])
-      devLog(`${logPrefix} Got ${arr.length} records, names:`, arr.map((r: any) => r?.recordName || '?').join(', '))
-      for (const r of arr) {
-        if (!r) continue
-        const name = r?.recordName || r?.record_name || ''
-        if (name !== 'VoterBondReceipt') continue
-        const plain = r?.plaintext || r?.data || r?.value || ''
-        if (tryUseReceipt(plain, 'adapter plaintext', isSpentRecord(r))) break
-      }
-    } catch (error) {
-      devWarn(`${logPrefix} Strategy 1 failed:`, error)
-    }
-  }
-
-  const shieldObj = (window as any).shield || (window as any).shieldWallet
-  if (!matchedUnspent && shieldObj?.requestRecords) {
-    try {
-      devLog(`${logPrefix} Strategy 2: requestRecords + decrypt`)
-      const records = await shieldObj.requestRecords(programId)
-      const arr = Array.isArray(records) ? records : (records?.records || [])
-      const decryptFn = (window as any).__aleoDecrypt
-      for (const r of arr) {
-        if (!r) continue
-        const name = r?.recordName || r?.record_name || ''
-        if (name !== 'VoterBondReceipt') continue
-        const isSpent = isSpentRecord(r)
-        const ciphertext = r?.recordCiphertext || r?.record_ciphertext || r?.ciphertext
-        if (ciphertext && typeof decryptFn === 'function') {
-          try {
-            devLog(`${logPrefix} Decrypting VoterBondReceipt ciphertext...`)
-            const decrypted = await decryptFn(String(ciphertext))
-            if (tryUseReceipt(decrypted, 'decrypted ciphertext', isSpent)) break
-          } catch (decryptError) {
-            devWarn(`${logPrefix} Decrypt failed:`, decryptError)
-          }
-        }
-
-        const plain = r?.plaintext || r?.data || r?.value || ''
-        if (tryUseReceipt(plain, 'wallet plaintext', isSpent)) break
-      }
-    } catch (error) {
-      devWarn(`${logPrefix} Strategy 2 failed:`, error)
-    }
-  }
+  // Aleo wallet strategies removed — on Ethereum/Fhenix, VoterBondReceipt data
+  // will be read from the FhenixMarkets contract via ethers.js
+  devLog(`${logPrefix} Ethereum mode: VoterBondReceipt lookup via contract (TODO)`)
 
   if (!matchedUnspent && !matchedSpent) {
     devLog(`${logPrefix} No VoterBondReceipt found for market:`, marketId)
@@ -179,7 +111,7 @@ async function inspectVoterBondReceiptsForMarket(
 
 export function ResolvePanel({ market, resolution, onResolutionChange }: ResolvePanelProps) {
   const { wallet } = useWalletStore()
-  const { executeTransaction } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [transactionId, setTransactionId] = useState<string | null>(null)
@@ -188,9 +120,8 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
   const [currentBlock, setCurrentBlock] = useState<bigint>(0n)
   const [bondIndicator, setBondIndicator] = useState<BondIndicatorState>({ status: 'idle', receipt: null })
 
-  const tokenSymbol = getTokenSymbol(market.tokenType)
-  const tokenTypeStr: 'ETH' | 'USDCX' | 'USAD' = market.tokenType === 'USDCX' ? 'USDCX'
-    : market.tokenType === 'USAD' ? 'USAD' : 'ETH'
+  const tokenSymbol = getTokenSymbol('ETH')
+  const tokenTypeStr = 'ETH' as const
   const numOutcomes = market.numOutcomes ?? 2
   const outcomeLabels = market.outcomeLabels ?? (numOutcomes === 2 ? ['Yes', 'No'] : Array.from({ length: numOutcomes }, (_, i) => `Outcome ${i + 1}`))
 
@@ -223,7 +154,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
       }
       return 'challenge' // Within dispute window — can file dispute
     }
-    if (market.status === MARKET_STATUS.PENDING_RESOLUTION) {
+    if (market.status === 5 /* PENDING_RESOLUTION */) {
       // Voting phase — check if voting window passed with enough voters
       if (resolution && currentBlock > 0n && currentBlock > resolution.challenge_deadline) {
         return 'finalize' // Voting window passed → finalize_votes
@@ -240,11 +171,11 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
   const roundInfo = useMemo(() => {
     if (!resolution) return null
     return {
-      round: resolution.round || 1,
-      proposer: resolution.proposer || resolution.resolver || 'unknown',
-      bondAmount: resolution.bond_amount || MIN_RESOLUTION_BOND,
+      round: (resolution.round as number) || 1,
+      proposer: (resolution.proposer as string) || (resolution.resolver as string) || 'unknown',
+      bondAmount: (resolution.bond_amount as bigint) || MIN_RESOLUTION_BOND,
       totalBonded: resolution.total_bonded || MIN_RESOLUTION_BOND,
-      proposedOutcome: resolution.proposed_outcome || resolution.winning_outcome,
+      proposedOutcome: (resolution.proposed_outcome as number) || resolution.winning_outcome,
     }
   }, [resolution])
 
@@ -258,7 +189,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     if (!resolution || currentBlock === 0n) return null
     const blocksLeft = resolution.challenge_deadline - currentBlock
     if (blocksLeft <= 0n) return { text: 'Challenge window ended', canFinalize: true, blocksLeft: 0n }
-    const secondsLeft = Number(blocksLeft) * config.secondsPerBlock
+    const secondsLeft = Number(blocksLeft) // deadlines are timestamps (seconds)
     const hours = Math.floor(secondsLeft / 3600)
     const minutes = Math.floor((secondsLeft % 3600) / 60)
     return {
@@ -290,7 +221,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     ;(async () => {
       try {
         const receipt = await inspectVoterBondReceiptsForMarket(
-          getProgramIdForToken(tokenTypeStr),
+          getProgramIdForToken('ETH'),
           market.id,
           '[BondStatus]',
         )
@@ -358,21 +289,12 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     setIsSubmitting(true)
     setError(null)
     try {
-      const inputs = buildCloseMarketInputs(market.id)
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenTypeStr),
-        function: 'close_market',
-        inputs,
-        fee: 1.5,
-      })
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-        onResolutionChange?.()
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const receipt = await contractCloseMarket(market.id)
+      setTransactionId(receipt.hash)
+      onResolutionChange?.()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to close market')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to close market')
     } finally {
       setIsSubmitting(false)
     }
@@ -382,103 +304,21 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     if (!selectedOutcome) return
     setIsSubmitting(true)
     setError(null)
-    let reservedRecord: string | null = null
     try {
       if (!wallet.address) {
         throw new Error('Wallet address not available. Reconnect your wallet and try again.')
       }
 
-      const [onChainMarket, onChainResolution, onChainBlock] = await Promise.all([
-        getMarket(market.id, getProgramIdForToken(tokenTypeStr)),
-        getMarketResolution(market.id, getProgramIdForToken(tokenTypeStr)),
-        getCurrentBlockHeight(),
-      ])
+      await ensureSepoliaNetwork()
 
-      if (!onChainMarket) {
-        throw new Error('Market data could not be loaded from chain. Please refresh and try again.')
-      }
+      // Bond is sent as msg.value (minimum 0.001 ETH)
+      const bondWei = FEES.MIN_VOTER_BOND
 
-      if (selectedOutcome < 1 || selectedOutcome > onChainMarket.num_outcomes) {
-        throw new Error(`Outcome ${selectedOutcome} is invalid for this market.`)
-      }
-
-      const canVoteNow =
-        onChainMarket.status === MARKET_STATUS.CLOSED
-        || onChainMarket.status === MARKET_STATUS.PENDING_RESOLUTION
-        || (onChainMarket.status === MARKET_STATUS.ACTIVE && onChainBlock > onChainMarket.deadline)
-
-      if (!canVoteNow) {
-        throw new Error(
-          `vote_outcome is not open yet. Market status=${onChainMarket.status}, ` +
-          `current block=${onChainBlock.toString()}, deadline=${onChainMarket.deadline.toString()}.`
-        )
-      }
-
-      if (onChainBlock > onChainMarket.resolution_deadline) {
-        throw new Error(
-          `Resolution deadline already passed at block ${onChainMarket.resolution_deadline.toString()}. ` +
-          `vote_outcome can no longer be submitted.`
-        )
-      }
-
-      if (
-        onChainMarket.status === MARKET_STATUS.PENDING_RESOLUTION
-        && onChainResolution
-        && onChainResolution.challenge_deadline > 0n
-        && onChainBlock > onChainResolution.challenge_deadline
-      ) {
-        throw new Error(
-          `Voting window already ended at block ${onChainResolution.challenge_deadline.toString()}. ` +
-          `Use finalize_votes instead of vote_outcome.`
-        )
-      }
-
-      const publicFeeRequired = 1_500_000n
-      if (!wallet.isDemoMode && wallet.balance.public < publicFeeRequired) {
-        throw new Error(
-          `Insufficient public ETH for transaction fee. vote_outcome needs 1.50 public ETH for gas, ` +
-          `but only ${Number(wallet.balance.public) / 1_000_000} ETH is public in your wallet.`
-        )
-      }
-
-      // Need a credits record for bond
-      const { fetchCreditsRecord, reserveCreditsRecord } = await import('@/lib/credits-record')
-      const bondAmount = Number(MIN_RESOLUTION_BOND)
-      const record = await fetchCreditsRecord(bondAmount, wallet.address)
-      if (!record) {
-        throw new Error(
-          `Need an unspent private Credits record with at least ${bondAmount / 1_000_000} ETH ` +
-          `for the vote bond. Public ETH fee is checked separately.`
-        )
-      }
-
-      const bondNonce = `${Date.now()}field`
-      const inputs = [
-        ...buildVoteOutcomeInputs(market.id, selectedOutcome, bondNonce),
-        record,
-      ]
-      reserveCreditsRecord(record)
-      reservedRecord = record
-
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenTypeStr),
-        function: 'vote_outcome',
-        inputs,
-        fee: 1.5,
-        recordIndices: [3],
-      })
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-        onResolutionChange?.()
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      const receipt = await contractVoteOutcome(market.id, selectedOutcome, bondWei)
+      setTransactionId(receipt.hash)
+      onResolutionChange?.()
     } catch (err: unknown) {
-      if (reservedRecord) {
-        const { releaseCreditsRecord } = await import('@/lib/credits-record')
-        releaseCreditsRecord(reservedRecord)
-      }
-      setError(err instanceof Error ? err.message : 'Failed to submit outcome')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to submit outcome')
     } finally {
       setIsSubmitting(false)
     }
@@ -488,59 +328,21 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     if (!selectedOutcome) return
     setIsSubmitting(true)
     setError(null)
-    let reservedRecord: string | null = null
     try {
       if (!wallet.address) {
         throw new Error('Wallet address not available. Reconnect your wallet and try again.')
       }
 
-      const publicFeeRequired = 1_500_000n
-      if (!wallet.isDemoMode && wallet.balance.public < publicFeeRequired) {
-        throw new Error(
-          `Insufficient public ETH for transaction fee. dispute_resolution needs 1.50 public ETH for gas, ` +
-          `but only ${Number(wallet.balance.public) / 1_000_000} ETH is public in your wallet.`
-        )
-      }
+      await ensureSepoliaNetwork()
 
-      const bondAmount = minChallengeBond
-      const { fetchCreditsRecord, reserveCreditsRecord } = await import('@/lib/credits-record')
-      const record = await fetchCreditsRecord(Number(bondAmount), wallet.address)
-      if (!record) {
-        throw new Error(
-          `Need an unspent private Credits record with at least ${Number(bondAmount) / 1_000_000} ETH ` +
-          `for the dispute bond. Public ETH fee is checked separately.`
-        )
-      }
+      // Dispute bond = 3x total bonded (sent as msg.value)
+      const bondWei = minChallengeBond
 
-      const bondNonce = `${Date.now()}field`
-      // v34: dispute_resolution(market_id, proposed_outcome, dispute_nonce, credits_in, dispute_bond)
-      const inputs = [
-        ...buildDisputeInputs(market.id, selectedOutcome, bondAmount, bondNonce),
-        record,
-        `${bondAmount}u128`,
-      ]
-      reserveCreditsRecord(record)
-      reservedRecord = record
-
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenTypeStr),
-        function: 'dispute_resolution',
-        inputs,
-        fee: 1.5,
-        recordIndices: [3],
-      })
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-        onResolutionChange?.()
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      const receipt = await contractDispute(market.id, selectedOutcome, bondWei)
+      setTransactionId(receipt.hash)
+      onResolutionChange?.()
     } catch (err: unknown) {
-      if (reservedRecord) {
-        const { releaseCreditsRecord } = await import('@/lib/credits-record')
-        releaseCreditsRecord(reservedRecord)
-      }
-      setError(err instanceof Error ? err.message : 'Failed to challenge outcome')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to challenge outcome')
     } finally {
       setIsSubmitting(false)
     }
@@ -550,23 +352,19 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     setIsSubmitting(true)
     setError(null)
     try {
-      const inputs = buildFinalizeVotesInputs(market.id)
-      // v34: finalize_votes (status 5→6) or confirm_resolution (status 6→3)
-      const fnName = market.status === STATUS_PENDING_FINALIZATION ? 'confirm_resolution' : 'finalize_votes'
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenTypeStr),
-        function: fnName,
-        inputs,
-        fee: 1.5,
-      })
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-        onResolutionChange?.()
+      await ensureSepoliaNetwork()
+
+      // Determine which function to call based on market status
+      let receipt
+      if (market.status === STATUS_PENDING_FINALIZATION) {
+        receipt = await contractConfirmResolution(market.id)
       } else {
-        throw new Error('No transaction ID returned from wallet')
+        receipt = await contractFinalizeVotes(market.id)
       }
+      setTransactionId(receipt.hash)
+      onResolutionChange?.()
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to finalize outcome')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to finalize outcome')
     } finally {
       setIsSubmitting(false)
     }
@@ -577,67 +375,15 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     setIsSubmitting(true)
     setError(null)
     try {
-      const programId = getProgramIdForToken(tokenTypeStr)
-      devLog('[ClaimBond] Program:', programId)
+      await ensureSepoliaNetwork()
 
-      let matchedReceipt: ParsedVoterBondReceipt | null = bondIndicator.receipt
-      if (!matchedReceipt) {
-        const receiptScan = await inspectVoterBondReceiptsForMarket(programId, market.id, '[ClaimBond]')
-        matchedReceipt = receiptScan.unspent
-        if (!matchedReceipt && receiptScan.spent) {
-          setBondIndicator({
-            status: 'claimed',
-            receipt: receiptScan.spent,
-            message: 'This bond receipt has already been spent in a successful claim.',
-          })
-          throw new Error('This bond has already been claimed.')
-        }
-      }
-
-      const receiptRecord = matchedReceipt?.plaintext ?? null
-
-      if (!receiptRecord) {
-        setBondIndicator({
-          status: 'missing',
-          receipt: null,
-          message: 'This wallet does not have a VoterBondReceipt for this market.',
-        })
-        throw new Error('No VoterBondReceipt for this market was found in your wallet. If you voted from another wallet, already claimed, or only have receipts from other Fhenix markets, this claim will fail.')
-      }
-
-      if (
-        matchedReceipt?.votedOutcome != null
-        && resolution
-        && market.status === MARKET_STATUS.RESOLVED
-        && matchedReceipt.votedOutcome !== resolution.winning_outcome
-      ) {
-        setBondIndicator({ status: 'slashed', receipt: matchedReceipt })
-        throw new Error(
-          `Your recorded vote was outcome ${matchedReceipt.votedOutcome}, but the resolved winner is outcome ${resolution.winning_outcome}. Losing voter bonds are slashed and cannot be claimed.`
-        )
-      }
-
-      if (matchedReceipt) {
-        setBondIndicator({ status: 'claimable', receipt: matchedReceipt })
-      }
-
-      devLog('[ClaimBond] Submitting claim_voter_bond')
-      const result = await executeTransaction({
-        program: programId,
-        function: 'claim_voter_bond',
-        inputs: [receiptRecord],
-        fee: 1.5,
-        recordIndices: [0],
-      })
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-        onResolutionChange?.()
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      // On Ethereum, claimVoterBond checks on-chain if the caller voted correctly
+      const receipt = await contractClaimVoterBond(market.id)
+      setTransactionId(receipt.hash)
+      onResolutionChange?.()
     } catch (err: unknown) {
       devWarn('[ClaimBond] Error:', err)
-      setError(err instanceof Error ? err.message : 'Failed to claim voter bond')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to claim voter bond')
     } finally {
       setIsSubmitting(false)
     }
@@ -834,7 +580,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
               {roundInfo && (
                 <div className="flex justify-between text-xs text-surface-500">
                   <span>Total Bonded</span>
-                  <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1_000_000} ETH</span>
+                  <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1e18} ETH</span>
                 </div>
               )}
               <button
@@ -911,7 +657,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Bonded</span>
-                      <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1_000_000} ETH</span>
+                      <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1e18} ETH</span>
                     </div>
                     {challengeInfo && (
                       <div className="flex justify-between text-sm">
@@ -1001,7 +747,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Bonded</span>
-                      <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1_000_000} ETH</span>
+                      <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1e18} ETH</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Dispute Deadline</span>
@@ -1027,7 +773,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                     <div>
                       <p className="text-sm font-medium text-no-300">Disagree? File a Dispute!</p>
                       <p className="text-xs text-surface-400 mt-1">
-                        Override the vote result with <span className="text-white font-medium">{Number(BigInt(roundInfo?.totalBonded || 0) * 3n) / 1_000_000} ETH bond</span> (3× total bonded).
+                        Override the vote result with <span className="text-white font-medium">{Number(BigInt(roundInfo?.totalBonded || 0) * 3n) / 1e18} ETH bond</span> (3× total bonded).
                         If your outcome is correct, you get your bond back + all voter bonds. If wrong, you lose your entire bond.
                       </p>
                     </div>
@@ -1058,7 +804,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
 
                   <button onClick={handleChallengeOutcome} disabled={isSubmitting || !selectedOutcome}
                     className={cn('w-full flex items-center justify-center gap-2 mt-4', 'bg-no-500/20 hover:bg-no-500/30 text-no-300 font-medium py-3 rounded-xl transition-colors', !selectedOutcome && 'opacity-50 cursor-not-allowed')}>
-                    {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Confirm in Wallet...</span></> : <><Swords className="w-5 h-5" /><span>{selectedOutcome ? `Dispute: ${outcomeLabels[selectedOutcome - 1]} (${Number(BigInt(roundInfo?.totalBonded || 0) * 3n) / 1_000_000} ETH)` : 'Select Outcome to Dispute'}</span></>}
+                    {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Confirm in Wallet...</span></> : <><Swords className="w-5 h-5" /><span>{selectedOutcome ? `Dispute: ${outcomeLabels[selectedOutcome - 1]} (${Number(BigInt(roundInfo?.totalBonded || 0) * 3n) / 1e18} ETH)` : 'Select Outcome to Dispute'}</span></>}
                   </button>
                 </div>
               </div>
@@ -1091,7 +837,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Bonded</span>
-                      <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1_000_000} ETH</span>
+                      <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1e18} ETH</span>
                     </div>
                   </div>
                 )}

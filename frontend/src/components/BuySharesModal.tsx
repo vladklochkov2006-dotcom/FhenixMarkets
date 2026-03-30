@@ -2,13 +2,12 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Shield, ShieldAlert, TrendingUp, Check, Loader2, AlertCircle, Settings2 } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { type Market, useWalletStore, useBetsStore, outcomeToString } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
-import { cn, formatCredits, getCategoryName, getCategoryEmoji, getTokenSymbol } from '@/lib/utils'
+import { cn, formatCredits, getCategoryName, getCategoryEmoji } from '@/lib/utils'
 import { TransactionLink } from './TransactionLink'
-import { buildBuySharesInputs, getMarket, getCurrentBlockHeight, MARKET_STATUS, getProgramIdForToken } from '@/lib/aleo-client'
-import { fetchCreditsRecord } from '@/lib/credits-record'
 import { calculateBuySharesOut, calculateBuyPriceImpact, calculateMinSharesOut, calculateFees, type AMMReserves } from '@/lib/amm'
 import { devWarn } from '../lib/logger'
+import { buyShares as contractBuyShares, fetchMarket, parseEth, parseContractError, ensureSepoliaNetwork, MARKET_STATUS } from '@/lib/contracts'
+// ethers removed — not directly needed here
 
 interface BuySharesModalProps {
   market: Market | null
@@ -27,8 +26,8 @@ function getOutcomeColor(outcome: number): string {
 
 export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps) {
   const { wallet } = useWalletStore()
-  const { addPendingBet, confirmPendingBet, removePendingBet } = useBetsStore()
-  const { executeTransaction, pollTransactionStatus } = useAleoTransaction()
+  const { addPendingBet, confirmPendingBet } = useBetsStore()
+  // Contract transaction — no legacy adapter needed
 
   const [selectedOutcome, setSelectedOutcome] = useState<number | null>(null)
   const [amount, setAmount] = useState('')
@@ -43,16 +42,7 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
 
   const numOutcomes = market?.numOutcomes || 2
   const outcomeLabels = market?.outcomeLabels || OUTCOME_LABELS_DEFAULT.slice(0, numOutcomes)
-  const tokenSymbol = market ? getTokenSymbol(market.tokenType) : 'ETH'
-  const marketTokenType = (market?.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-  const isUsdcx = marketTokenType === 'USDCX'
-  const isStablecoin = marketTokenType === 'USDCX' || marketTokenType === 'USAD'
-  const stablecoinTotalBalance = marketTokenType === 'USDCX'
-    ? wallet.balance.usdcxPublic + wallet.balance.usdcxPrivate
-    : wallet.balance.usadPublic + wallet.balance.usadPrivate
-  const stablecoinPrivateBalance = marketTokenType === 'USDCX'
-    ? wallet.balance.usdcxPrivate
-    : wallet.balance.usadPrivate
+  const tokenSymbol = 'ETH'
   const isExpired = market ? (market.timeRemaining === 'Ended' || market.status !== 1) : false
 
   // AMM reserves from market data
@@ -70,13 +60,13 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
   // Calculate shares out and price impact
   const tradePreview = useMemo(() => {
     if (!selectedOutcome || !amount || !ammReserves) return null
-    const amountMicro = BigInt(Math.floor(parseFloat(amount) * 1_000_000))
-    if (amountMicro <= 0n) return null
+    const amountWei = parseEth(amount)
+    if (amountWei <= 0n) return null
 
-    const sharesOut = calculateBuySharesOut(ammReserves, selectedOutcome, amountMicro)
+    const sharesOut = calculateBuySharesOut(ammReserves, selectedOutcome, amountWei)
     const minShares = calculateMinSharesOut(sharesOut, slippageTolerance)
-    const priceImpact = calculateBuyPriceImpact(ammReserves, selectedOutcome, amountMicro)
-    const fees = calculateFees(amountMicro)
+    const priceImpact = calculateBuyPriceImpact(ammReserves, selectedOutcome, amountWei)
+    const fees = calculateFees(amountWei)
 
     return {
       sharesOut,
@@ -84,7 +74,7 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
       priceImpact,
       fees,
       // Winning shares redeem 1:1 (use minShares — matches on-chain record quantity)
-      potentialPayout: Number(minShares) / 1_000_000,
+      potentialPayout: Number(minShares) / 1e18,
     }
   }, [selectedOutcome, amount, ammReserves, slippageTolerance])
 
@@ -109,188 +99,83 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
     setError(null)
 
     try {
-      if (!market.id.endsWith('field')) {
-        throw new Error('This is a demo market. Use markets created via "Create Market" to trade.')
+      // Check if this is a real on-chain market (bytes32 hex ID)
+      if (!market.id.startsWith('0x')) {
+        throw new Error('This is a demo market. Use markets created via "Create Market" to trade on-chain.')
       }
 
-      const amountMicro = BigInt(Math.floor(parseFloat(amount) * 1_000_000))
+      const amountWei = parseEth(amount)
       const minSharesOut = tradePreview?.minShares || 0n
-      const feeInMicro = 1_500_000n
 
-      // Pre-validate market status, deadline, AND token type
+      // Pre-validate market status on-chain
       try {
-        const [onChainMarket, currentBlock] = await Promise.all([
-          getMarket(market.id, getProgramIdForToken(marketTokenType)),
-          getCurrentBlockHeight(),
-        ])
-        if (onChainMarket && onChainMarket.status !== MARKET_STATUS.ACTIVE) {
-          const statusNames: Record<number, string> = {
-            2: 'CLOSED', 3: 'RESOLVED', 4: 'CANCELLED', 5: 'PENDING_RESOLUTION'
-          }
-          throw new Error(
-            `Market is ${statusNames[onChainMarket.status] || 'not active'}. Trading is no longer available.`
-          )
+        const onChainMarket = await fetchMarket(market.id)
+        if (onChainMarket && onChainMarket.status !== MARKET_STATUS.OPEN) {
+          throw new Error('Market is not open for trading.')
         }
-        // Check if betting deadline has passed (on-chain status may still be ACTIVE
-        // because close_market hasn't been called yet)
-        if (onChainMarket && currentBlock > onChainMarket.deadline) {
-          throw new Error(
-            `Betting deadline has passed (block ${onChainMarket.deadline.toString()} < current ${currentBlock.toString()}). Trading is no longer available.`
-          )
-        }
-        // Validate token type matches on-chain market (prevents transition/finalize mismatch)
-        if (onChainMarket) {
-          const onChainTokenType = onChainMarket.token_type === 3 ? 'USAD'
-            : onChainMarket.token_type === 2 ? 'USDCX'
-            : 'ETH'
-          if (marketTokenType !== onChainTokenType) {
-            throw new Error(
-              `Token type mismatch: UI shows ${marketTokenType} but on-chain market uses ${onChainTokenType}. Please refresh the page.`
-            )
-          }
+        const now = BigInt(Math.floor(Date.now() / 1000))
+        if (onChainMarket && now > onChainMarket.deadline) {
+          throw new Error('Betting deadline has passed. Trading is no longer available.')
         }
       } catch (validationErr) {
         if (validationErr instanceof Error &&
-            (validationErr.message.includes('Market is') || validationErr.message.includes('deadline has passed') || validationErr.message.includes('Token type mismatch'))) {
+            (validationErr.message.includes('not open') || validationErr.message.includes('deadline'))) {
           throw validationErr
         }
         devWarn('Pre-validation skipped (network error):', validationErr)
       }
 
-      let functionName: string
-      let inputs: string[]
-      let releaseSelectedRecord: (() => void) | null = null
+      // Ensure wallet is on Sepolia
+      await ensureSepoliaNetwork()
+      setPrivacyMode('private') // All shares are FHE-encrypted
 
-      // expected_shares goes into the OutcomeShare record's quantity field.
-      // Set to minSharesOut (conservative) so record quantity <= actual shares_out.
-      // Contract finalize asserts shares_out >= expected_shares.
-      const expectedShares = minSharesOut
-
-      const tokenType = marketTokenType
-
-      if (isStablecoin) {
-        if (!wallet.isDemoMode && wallet.balance.public < feeInMicro) {
-          throw new Error('Insufficient public ETH for transaction fee. Gas fees are always paid in public ETH.')
-        }
-        if (!wallet.isDemoMode && amountMicro > stablecoinTotalBalance) {
-          throw new Error(
-            `Insufficient ${tokenType} balance. Need ${(Number(amountMicro) / 1_000_000).toFixed(2)} ${tokenType} ` +
-            `but only have ${(Number(stablecoinTotalBalance) / 1_000_000).toFixed(2)} ${tokenType}.`
-          )
-        }
-        const result = buildBuySharesInputs(market.id, selectedOutcome, amountMicro, expectedShares, minSharesOut, tokenType)
-        functionName = result.functionName
-        inputs = result.inputs
-        setPrivacyMode(stablecoinPrivateBalance > 0n ? 'private' : 'public')
-      } else {
-        if (!wallet.isDemoMode && wallet.balance.public < feeInMicro) {
-          throw new Error('Insufficient public ETH for transaction fee. Gas fees are always paid in public ETH.')
-        }
-        // ETH: buy_shares_private uses transfer_private_to_public (needs credits record)
-        const totalNeeded = Number(amountMicro)
-        const { reserveCreditsRecord, releaseCreditsRecord } = await import('@/lib/credits-record')
-        const creditsRecord = await fetchCreditsRecord(totalNeeded, wallet.address)
-        if (!creditsRecord) {
-          throw new Error(
-            `Could not find a Credits record with at least ${(totalNeeded / 1_000_000).toFixed(2)} ETH. ` +
-            `Private betting requires an unspent Credits record. ` +
-            `Make sure your wallet has private ETH tokens (not just public balance).`
-          )
-        }
-        reserveCreditsRecord(creditsRecord)
-        const result = buildBuySharesInputs(market.id, selectedOutcome, amountMicro, expectedShares, minSharesOut, 'ETH', creditsRecord)
-        functionName = result.functionName
-        inputs = result.inputs
-        setPrivacyMode('private')
-        releaseSelectedRecord = () => releaseCreditsRecord(creditsRecord)
-      }
-
-      // Add timeout — MetaMask can hang after confirmation
+      // Show slow transaction indicator after 30s
       setIsSlowTransaction(false)
       const slowTimer = setTimeout(() => setIsSlowTransaction(true), 30_000)
-      const WALLET_TIMEOUT_MS = 120_000 // 2 minutes
 
-      // v8: Single TX — append Token record + MerkleProof for stablecoins
-      if (tokenType === 'USDCX' || tokenType === 'USAD') {
-        const { findTokenRecord, reserveTokenRecord, releaseTokenRecord } = await import('@/lib/private-stablecoin')
-        const { buildMerkleProofsForAddress } = await import('@/lib/aleo-client')
-        const tokenRecord = await findTokenRecord(tokenType, amountMicro)
-        if (tokenRecord) {
-          if (!wallet.address) {
-            throw new Error('Wallet address is unavailable. Please reconnect your wallet and try again.')
-          }
-          reserveTokenRecord(tokenType, tokenRecord)
-          releaseSelectedRecord = () => releaseTokenRecord(tokenType, tokenRecord)
-          inputs!.push(tokenRecord)
-          inputs!.push(await buildMerkleProofsForAddress(wallet.address))
-        } else {
-          throw new Error(
-            `No private ${tokenType} Token record found. Please unshield ${tokenType} in MetaMask first.`
-          )
-        }
-      }
-      const txPromise = executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName!,
-        inputs: inputs!,
-        fee: 1.5,
-        recordIndices: [6],
-      })
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(
-          'Wallet did not respond within 2 minutes. The transaction may still be processing in your wallet. ' +
-          'Check your wallet extension for pending transactions.'
-        )), WALLET_TIMEOUT_MS)
-      })
-
-      let txResult: { transactionId?: string }
       try {
-        txResult = await Promise.race([txPromise, timeoutPromise])
-      } finally {
+        // Call buyShares on-chain (triggers wallet popup, waits for receipt)
+        const receipt = await contractBuyShares(
+          market.id,
+          selectedOutcome!,
+          minSharesOut,
+          amountWei,
+        )
+
         clearTimeout(slowTimer)
         setIsSlowTransaction(false)
-      }
 
-      if (txResult?.transactionId) {
-        const submittedTxId = txResult.transactionId
-        setTransactionId(submittedTxId)
+        const txHash = receipt.hash
+        setTransactionId(txHash)
         setStep('success')
 
+        // Track bet locally
         addPendingBet({
-          id: submittedTxId,
+          id: txHash,
           marketId: market.id,
-          amount: amountMicro,
+          amount: amountWei,
           outcome: outcomeToString(selectedOutcome),
           placedAt: Date.now(),
           status: 'pending',
           marketQuestion: market.question,
           lockedMultiplier: tradePreview?.potentialPayout ? tradePreview.potentialPayout / parseFloat(amount) : 1,
-          sharesReceived: minSharesOut,  // matches on-chain OutcomeShare.quantity (= expected_shares)
-          tokenType: market.tokenType || 'ETH',
+          sharesReceived: minSharesOut,
+          tokenType: 'ETH',
         })
 
-        pollTransactionStatus(submittedTxId, (status, onChainTxId) => {
-          if (status === 'confirmed') {
-            confirmPendingBet(submittedTxId, onChainTxId)
-            return
-          }
-          if (status === 'failed') {
-            releaseSelectedRecord?.()
-            removePendingBet(submittedTxId)
-            devWarn('[BuySharesModal] Removed rejected buy from portfolio:', submittedTxId)
-          }
-        }, 30, 10_000)
+        // Tx already confirmed (receipt returned), mark as confirmed
+        confirmPendingBet(txHash, txHash)
 
         // Refresh balance
         setTimeout(() => useWalletStore.getState().refreshBalance(), 3000)
-        setTimeout(() => useWalletStore.getState().refreshBalance(), 10000)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
+      } finally {
+        clearTimeout(slowTimer)
+        setIsSlowTransaction(false)
       }
     } catch (err: unknown) {
-      releaseSelectedRecord?.()
       console.error('Failed to buy shares:', err)
-      setError(err instanceof Error ? err.message : 'An unknown error occurred.')
+      const msg = err instanceof Error ? parseContractError(err) : 'An unknown error occurred.'
+      setError(msg)
     } finally {
       setIsPlacing(false)
     }
@@ -453,17 +338,15 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
                             </div>
                             <div className="flex justify-between text-xs mt-2">
                               <span className="text-surface-500">
-                                {isStablecoin
-                                  ? `Balance: ${formatCredits(stablecoinTotalBalance)} ${marketTokenType} (private: ${formatCredits(stablecoinPrivateBalance)})`
-                                  : `Balance: ${formatCredits(wallet.balance.public + wallet.balance.private)} ETH (private: ${formatCredits(wallet.balance.private)})`
-                                }
+                                {`Balance: ${formatCredits(wallet.balance.public + wallet.balance.private)} ETH (private: ${formatCredits(wallet.balance.private)})`}
                               </span>
                               <button
                                 onClick={() => {
                                   // Use total balance (public + private) minus gas buffer
-                                  const bal = isStablecoin ? stablecoinTotalBalance : (wallet.balance.public + wallet.balance.private)
-                                  const usable = bal > 700_000n ? bal - 700_000n : 0n
-                                  setAmount((Number(usable) / 1_000_000).toString())
+                                  const bal = wallet.balance.public + wallet.balance.private
+                                  const gasReserve = 700_000_000_000_000n // ~0.0007 ETH
+                                  const usable = bal > gasReserve ? bal - gasReserve : 0n
+                                  setAmount((Number(usable) / 1e18).toString())
                                 }}
                                 className="text-brand-400 hover:text-brand-300"
                               >
@@ -478,13 +361,13 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
                               <div className="flex justify-between text-sm">
                                 <span className="text-surface-400">Shares received</span>
                                 <span className="font-medium text-white">
-                                  {(Number(tradePreview.sharesOut) / 1_000_000).toFixed(4)}
+                                  {(Number(tradePreview.sharesOut) / 1e18).toFixed(4)}
                                 </span>
                               </div>
                               <div className="flex justify-between text-sm">
                                 <span className="text-surface-400">Min shares (after slippage)</span>
                                 <span className="text-surface-300">
-                                  {(Number(tradePreview.minShares) / 1_000_000).toFixed(4)}
+                                  {(Number(tradePreview.minShares) / 1e18).toFixed(4)}
                                 </span>
                               </div>
                               <div className="flex justify-between text-sm">
@@ -500,7 +383,7 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
                               <div className="flex justify-between text-sm">
                                 <span className="text-surface-400">Fees (2%)</span>
                                 <span className="text-surface-300">
-                                  {(Number(tradePreview.fees.totalFees) / 1_000_000).toFixed(4)} {tokenSymbol}
+                                  {(Number(tradePreview.fees.totalFees) / 1e18).toFixed(4)} {tokenSymbol}
                                 </span>
                               </div>
                               <div className="border-t border-surface-700 pt-2 flex justify-between">
@@ -525,20 +408,8 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
                           {isSlowTransaction && (
                             <div className="p-3 rounded-lg bg-brand-500/10 border border-brand-500/20 mb-4">
                               <p className="text-sm text-brand-400">
-                                {wallet.walletType === 'shield' ? (
-                                  <>
-                                    MetaMask is processing... If you don't see activity in your Shield extension,
-                                    it may not support this transaction type (nested signer authorization).
-                                    The transaction will timeout in ~60 seconds if Shield cannot process it.
-                                    Consider using <strong>MetaMask</strong> as an alternative.
-                                  </>
-                                ) : (
-                                  <>
-                                    This is taking longer than expected. Please check that your wallet extension
-                                    is open and unlocked. The wallet may be encrypting with FHE,
-                                    which can take 30-60 seconds.
-                                  </>
-                                )}
+                                This is taking longer than expected. Please check that your wallet extension
+                                is open and unlocked. The transaction may take 30-60 seconds to process.
                               </p>
                             </div>
                           )}
@@ -610,7 +481,7 @@ export function BuySharesModal({ market, isOpen, onClose }: BuySharesModalProps)
                             <div className="flex justify-between mb-2">
                               <span className="text-surface-400">Shares</span>
                               <span className="font-medium text-white">
-                                {(Number(tradePreview.sharesOut) / 1_000_000).toFixed(4)}
+                                {(Number(tradePreview.sharesOut) / 1e18).toFixed(4)}
                               </span>
                             </div>
                             <div className="flex justify-between">

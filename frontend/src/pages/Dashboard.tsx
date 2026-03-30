@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWalletStore, useBetsStore, type Market, outcomeToIndex } from '@/lib/store'
 import { useRealMarketsStore } from '@/lib/market-store'
-import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui'
+import { usePrivyModal as useWalletModal } from '@/hooks/usePrivyWallet'
 import { MarketRow } from '@/components/MarketRow'
 import { MarketCard } from '@/components/MarketCard'
 import { DashboardHeader } from '@/components/DashboardHeader'
@@ -16,8 +16,14 @@ import { Footer } from '@/components/Footer'
 import { EmptyState } from '@/components/EmptyState'
 import { DashboardHero } from '@/components/DashboardHero'
 import { cn, formatCredits, getCategoryEmoji } from '@/lib/utils'
-import { resolvePendingMarkets, hasPendingMarkets, getPendingMarketsInfo, clearPendingMarkets, type PendingMarketInfo } from '@/lib/aleo-client'
 import { devWarn } from '../lib/logger'
+
+// Stubs for Aleo-specific pending market resolution (not needed on Ethereum)
+type PendingMarketInfo = { count: number; questions: string[]; statuses: string[]; retryCounts: number[] }
+const hasPendingMarkets = () => false
+const getPendingMarketsInfo = (): PendingMarketInfo => ({ count: 0, questions: [], statuses: [], retryCounts: [] })
+const resolvePendingMarkets = async (): Promise<string[]> => []
+const clearPendingMarkets = (): void => {}
 
 // ── localStorage helpers ──
 const BOOKMARKS_KEY = 'fhenix_bookmarks'
@@ -58,7 +64,7 @@ export function Dashboard() {
     const navigate = useNavigate()
     const { wallet } = useWalletStore()
     const { markets, isLoading, isRefreshing, fetchMarkets, addMarket } = useRealMarketsStore()
-    const { userBets, pendingBets, fetchUserBets, syncBetStatuses } = useBetsStore()
+    const { userBets, fetchUserBets, syncBetStatuses } = useBetsStore()
     const { setVisible: setModalVisible } = useWalletModal()
 
     useEffect(() => { setModalVisible(false) }, [setModalVisible])
@@ -69,7 +75,7 @@ export function Dashboard() {
     const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid')
     const [pendingInfo, setPendingInfo] = useState<PendingMarketInfo>({ count: 0, questions: [], statuses: [], retryCounts: [] })
     const [isResolvingPending, setIsResolvingPending] = useState(false)
-    const [tokenFilter, setTokenFilter] = useState<'all' | 'ETH' | 'USDCX' | 'USAD'>('all')
+    const [tokenFilter] = useState<'all' | 'ETH'>('all')
     const [marketTypeFilter, setMarketTypeFilter] = useState<'all' | 'binary' | 'multi' | 'scalar' | 'conditional'>('all')
     const [visibleCount, setVisibleCount] = useState(12)
     const [expandPositions, setExpandPositions] = useState(false)
@@ -189,8 +195,6 @@ export function Dashboard() {
     const paginatedMarkets = useMemo(() => filteredMarkets.slice(0, visibleCount), [filteredMarkets, visibleCount])
     const hasMore = filteredMarkets.length > visibleCount
 
-    if (!wallet.connected) return null
-
     return (
         <div className="min-h-screen bg-surface-950 relative overflow-hidden">
             {/* Background — same as Landing */}
@@ -309,7 +313,7 @@ export function Dashboard() {
                                                         const colorMap = ['bg-yes-400/15 text-yes-400', 'bg-no-400/15 text-no-400', 'bg-purple-400/15 text-purple-400', 'bg-brand-400/15 text-brand-400']
                                                         return <span className={cn('text-[10px] font-mono font-bold px-1.5 py-0.5 rounded', colorMap[idx - 1] || colorMap[0])}>{label}</span>
                                                     })()}
-                                                    <span className="text-[10px] font-mono text-surface-500">{formatCredits(bet.amount)} {bet.tokenType || 'ETH'}</span>
+                                                    <span className="text-[10px] font-mono text-surface-500">{formatCredits(bet.amount)} ETH</span>
                                                     {bet.status === 'pending' && <span className="text-[10px] font-mono text-brand-400">PENDING</span>}
                                                 </div>
                                             </div>
@@ -389,18 +393,6 @@ export function Dashboard() {
                             {showFilters && (
                                 <motion.div data-filters initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}>
                                     <div className="rounded-2xl p-5 space-y-5" style={{ background: 'linear-gradient(135deg, rgba(8, 32, 48, 0.8) 0%, rgba(4, 20, 32, 0.9) 100%)', border: '1px solid rgba(10, 217, 220, 0.06)' }}>
-                                        {/* Token filter */}
-                                        <div>
-                                            <label className="text-[9px] font-semibold text-surface-500 mb-2 block uppercase tracking-wider">Token Type</label>
-                                            <div className="flex gap-2">
-                                                {(['all', 'ETH', 'USDCX', 'USAD'] as const).map((t) => (
-                                                    <button key={t} onClick={() => setTokenFilter(t)}
-                                                        className={cn('px-4 py-2 rounded-lg text-xs font-medium transition-all duration-200', tokenFilter === t ? 'bg-brand-400/[0.12] text-brand-400 border border-brand-400/[0.2]' : 'bg-white/[0.02] text-surface-400 border border-white/[0.04] hover:bg-white/[0.04]')}>
-                                                        {t === 'all' ? 'All' : t}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
                                         {/* Market Type */}
                                         <div>
                                             <label className="text-[9px] font-semibold text-surface-500 mb-2 block uppercase tracking-wider">Market Type</label>

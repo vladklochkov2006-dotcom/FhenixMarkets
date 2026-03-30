@@ -2,7 +2,7 @@ import { Clock, TrendingUp, Shield, ChevronRight, Flame } from 'lucide-react'
 import { useMemo } from 'react'
 import { useLiveCountdown as useGlobalCountdown } from '@/hooks/useGlobalTicker'
 import { type Market } from '@/lib/store'
-import { cn, formatCredits, formatPercentage, getCategoryName, getCategoryEmoji, getCategoryStrip, getCategoryColor } from '@/lib/utils'
+import { cn, formatCredits, formatPercentage, getCategoryName, getCategoryStrip, getCategoryColor } from '@/lib/utils'
 import { getMarketThumbnail, isContainThumbnail } from '@/lib/market-thumbnails'
 
 import { Tooltip } from '@/components/ui/Tooltip'

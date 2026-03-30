@@ -8,10 +8,19 @@ import {
   AlertCircle,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
-import { useWalletStore, CONTRACT_INFO } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
+import { useWalletStore } from '@/lib/store'
 import { cn, formatCredits } from '@/lib/utils'
-import { getMappingValue } from '@/lib/aleo-client'
+import {
+  fetchProtocolTreasury,
+  cancelMarket as _contractCancelMarket,
+  withdrawProtocolFees as _contractWithdrawProtocolFees,
+  proposeTreasuryWithdrawal as contractProposeTreasuryWithdrawal,
+  approveTreasuryProposal as contractApproveTreasuryProposal,
+  executeTreasuryProposal as contractExecuteTreasuryProposal,
+  parseEth,
+  parseContractError,
+  ensureSepoliaNetwork,
+} from '@/lib/contracts'
 import { TransactionLink } from './TransactionLink'
 import { devWarn } from '../lib/logger'
 
@@ -19,24 +28,22 @@ type AdminAction = 'propose' | 'approve' | 'execute'
 
 interface TreasuryBalances {
   eth: bigint
-  usdcx: bigint
 }
 
 export function AdminPanel() {
   const { wallet } = useWalletStore()
-  const { executeTransaction } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const [activeAction, setActiveAction] = useState<AdminAction>('propose')
   const [treasuryBalances, setTreasuryBalances] = useState<TreasuryBalances>({
     eth: 0n,
-    usdcx: 0n,
   })
   const [isLoadingBalances, setIsLoadingBalances] = useState(true)
 
   // Propose form
   const [proposalAmount, setProposalAmount] = useState('')
   const [proposalRecipient, setProposalRecipient] = useState('')
-  const [proposalTokenType, setProposalTokenType] = useState<'eth' | 'usdcx'>('eth')
+  const [proposalTokenType] = useState<'eth'>('eth')
 
   // Approve/Execute form
   const [proposalId, setProposalId] = useState('')
@@ -55,17 +62,9 @@ export function AdminPanel() {
     const fetchBalances = async () => {
       setIsLoadingBalances(true)
       try {
-        // program_credits[0u8] = ETH, program_credits[1u8] = USDCX
-        const [ethBalRaw, usdcxBalRaw] = await Promise.all([
-          getMappingValue<string>('protocol_treasury', '0u8'),
-          getMappingValue<string>('protocol_treasury', '1u8'),
-        ])
-
+        const ethBal = await fetchProtocolTreasury()
         if (mounted) {
-          setTreasuryBalances({
-            eth: ethBalRaw ? BigInt(String(ethBalRaw).replace(/u\d+$/, '')) : 0n,
-            usdcx: usdcxBalRaw ? BigInt(String(usdcxBalRaw).replace(/u\d+$/, '')) : 0n,
-          })
+          setTreasuryBalances({ eth: ethBal })
         }
       } catch (err) {
         devWarn('Failed to fetch treasury balances:', err)
@@ -88,36 +87,14 @@ export function AdminPanel() {
     setError(null)
 
     try {
-      const amountMicro = proposalAmount
-        ? BigInt(Math.floor(parseFloat(proposalAmount) * 1_000_000))
-        : 0n
-
-      // propose_treasury_withdrawal(amount: u128, recipient: address, token_type: u8, nonce: u64)
-      const tokenTypeValue = proposalTokenType === 'eth' ? 1 : 2
-      const nonce = Date.now()
-
-      const inputs = [
-        `${amountMicro}u128`,
-        proposalRecipient || wallet.address!,
-        `${tokenTypeValue}u8`,
-        `${nonce}u64`,
-      ]
-
-      const result = await executeTransaction({
-        program: CONTRACT_INFO.programId,
-        function: 'propose_treasury_withdrawal',
-        inputs,
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const amountWei = proposalAmount ? parseEth(proposalAmount) : 0n
+      const recipient = proposalRecipient || wallet.address!
+      const receipt = await contractProposeTreasuryWithdrawal(recipient, amountWei)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to propose:', err)
-      setError(err instanceof Error ? err.message : 'Failed to submit proposal')
+      setError(parseContractError(err))
     } finally {
       setIsSubmitting(false)
     }
@@ -130,51 +107,30 @@ export function AdminPanel() {
     setError(null)
 
     try {
-      const result = await executeTransaction({
-        program: CONTRACT_INFO.programId,
-        function: 'approve_proposal',
-        inputs: [proposalId],
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const receipt = await contractApproveTreasuryProposal(proposalId)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to approve:', err)
-      setError(err instanceof Error ? err.message : 'Failed to approve proposal')
+      setError(parseContractError(err))
     } finally {
       setIsSubmitting(false)
     }
   }
 
   const handleExecute = async () => {
-    if (!proposalId || !executeAmount || !executeRecipient) return
+    if (!proposalId) return
 
     setIsSubmitting(true)
     setError(null)
 
     try {
-      // execute_proposal(proposal_id: field, amount: u128, recipient: address)
-      const amountMicro = BigInt(Math.floor(parseFloat(executeAmount) * 1_000_000))
-
-      const result = await executeTransaction({
-        program: CONTRACT_INFO.programId,
-        function: 'execute_proposal',
-        inputs: [proposalId, `${amountMicro}u128`, executeRecipient],
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const receipt = await contractExecuteTreasuryProposal(proposalId)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to execute:', err)
-      setError(err instanceof Error ? err.message : 'Failed to execute proposal')
+      setError(parseContractError(err))
     } finally {
       setIsSubmitting(false)
     }
@@ -213,16 +169,6 @@ export function AdminPanel() {
             ) : (
               <p className="text-lg font-bold text-white">
                 {formatCredits(treasuryBalances.eth)} ETH
-              </p>
-            )}
-          </div>
-          <div className="p-4 rounded-xl bg-white/[0.02]">
-            <p className="text-xs text-surface-500 uppercase tracking-wide mb-1">USDCX Treasury</p>
-            {isLoadingBalances ? (
-              <div className="h-7 w-20 bg-surface-700/50 rounded animate-pulse" />
-            ) : (
-              <p className="text-lg font-bold text-white">
-                {formatCredits(treasuryBalances.usdcx)} USDCX
               </p>
             )}
           </div>
@@ -295,10 +241,10 @@ export function AdminPanel() {
                 <div>
                   <label className="block text-sm text-surface-400 mb-2">Token Type</label>
                   <div className="flex gap-2">
-                    {(['eth', 'usdcx'] as const).map((t) => (
+                    {(['eth'] as const).map((t) => (
                       <button
                         key={t}
-                        onClick={() => setProposalTokenType(t)}
+                        disabled
                         className={cn(
                           'flex-1 py-2 rounded-lg text-sm font-medium transition-all border',
                           proposalTokenType === t
@@ -378,7 +324,7 @@ export function AdminPanel() {
                     type="text"
                     value={proposalId}
                     onChange={(e) => setProposalId(e.target.value)}
-                    placeholder="Enter proposal ID (field)"
+                    placeholder="Enter proposal ID"
                     className="input-field text-sm font-mono"
                   />
                 </div>
@@ -422,7 +368,7 @@ export function AdminPanel() {
                     type="text"
                     value={proposalId}
                     onChange={(e) => setProposalId(e.target.value)}
-                    placeholder="Enter proposal ID (field)"
+                    placeholder="Enter proposal ID"
                     className="input-field text-sm font-mono"
                   />
                 </div>

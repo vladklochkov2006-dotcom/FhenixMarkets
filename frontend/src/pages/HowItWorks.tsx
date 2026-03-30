@@ -7,7 +7,7 @@ const steps = [
     number: '01',
     icon: Wallet,
     title: 'Connect Your Wallet',
-    description: 'Connect a compatible Fhenix wallet to get started. Supported wallets include Shield, Puzzle, Leo, Fox, and Soter. Your private keys never leave your wallet.',
+    description: 'Connect your Ethereum wallet to get started. We support MetaMask and other popular wallets via Privy. Your private keys never leave your wallet.',
     detail: 'The Protocol is non-custodial — we never have access to your keys or funds.',
   },
   {
@@ -15,7 +15,7 @@ const steps = [
     icon: Target,
     title: 'Browse & Choose Markets',
     description: 'Explore prediction markets across various categories. Each market has a clear question, deadline, and current probability determined by the AMM.',
-    detail: 'Markets support three tokens: ETH (native), USDCX, and USAD stablecoins.',
+    detail: 'Markets are denominated in ETH (native Fhenix network token).',
   },
   {
     number: '03',
@@ -93,12 +93,10 @@ const mechanisms = [
   {
     icon: Coins,
     title: 'Supported Tokens',
-    description: 'Markets can be denominated in three different tokens, each with its own market contract:',
+    description: 'Markets are denominated in ETH, the native Fhenix network token:',
     items: [
       'ETH — Native Fhenix network token via FhenixMarkets.sol',
-      'USDCX — Test stablecoin via FhenixMarketsUSDCX.sol',
-      'USAD — Stablecoin via FhenixMarketsUSAD.sol',
-      'ETH uses encrypted token records; USDCX/USAD use Token records + MerkleProof for private trading',
+      'All trading uses encrypted token records for private on-chain activity',
     ],
   },
 ]

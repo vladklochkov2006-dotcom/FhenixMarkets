@@ -4,7 +4,7 @@
 // Correct complete-set minting/burning formulas matching contract v20.
 // Supports 2-4 outcome markets.
 
-const SHARE_PRICE_SCALE = 1_000_000 // $1.00 in microFHE
+const SHARE_PRICE_SCALE = 1e18 // 1 token in wei
 
 // Fee configuration matching contract (basis points)
 export const PROTOCOL_FEE_BPS = 50n   // 0.5%

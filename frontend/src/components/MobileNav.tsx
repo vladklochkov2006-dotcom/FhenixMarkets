@@ -1,4 +1,4 @@
-import { LayoutDashboard, TrendingUp, Plus, Vote, Settings } from 'lucide-react'
+import { LayoutDashboard, TrendingUp, Plus, Vote } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useWalletStore } from '@/lib/store'

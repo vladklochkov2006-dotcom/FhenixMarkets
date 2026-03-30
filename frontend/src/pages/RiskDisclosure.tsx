@@ -48,7 +48,7 @@ export function RiskDisclosure() {
             <ul className="list-disc list-inside space-y-2 text-surface-400">
               <li><strong className="text-surface-300">Code Vulnerabilities:</strong> Despite testing and review, smart contracts may contain undiscovered bugs or vulnerabilities that could result in loss of funds.</li>
               <li><strong className="text-surface-300">Immutability:</strong> Once deployed, smart contract code cannot be easily modified. Fixes may require deploying new contracts and migrating state.</li>
-              <li><strong className="text-surface-300">Composability Risk:</strong> The Protocol interacts with multiple on-chain contracts (FhenixMarkets.sol for ETH markets, FhenixMarketsUSDCX.sol for USDCX markets, FhenixMarketsUSAD.sol for USAD markets, and FhenixGovernance.sol for governance). Issues in any component could affect the entire system.</li>
+              <li><strong className="text-surface-300">Composability Risk:</strong> The Protocol interacts with multiple on-chain contracts (FhenixMarkets.sol for ETH markets and FhenixGovernance.sol for governance). Issues in any component could affect the entire system.</li>
             </ul>
           </section>
 
@@ -91,12 +91,10 @@ export function RiskDisclosure() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-white mb-4">6. Stablecoin Risk</h2>
+            <h2 className="text-lg font-semibold text-white mb-4">6. Token Risk</h2>
             <ul className="list-disc list-inside space-y-2 text-surface-400">
-              <li><strong className="text-surface-300">USAD & USDCX:</strong> The Protocol supports three tokens, each with its own market contract: native ETH (FhenixMarkets.sol), USDCX (FhenixMarketsUSDCX.sol), and USAD (FhenixMarketsUSAD.sol). These test stablecoin tokens may not maintain their peg to USD and have no guaranteed backing.</li>
-              <li><strong className="text-surface-300">De-peg Risk:</strong> Stablecoins can lose their peg due to market conditions, smart contract issues, or governance failures.</li>
-              <li><strong className="text-surface-300">Two-Transaction Flow:</strong> Buying shares with USDCX or USAD requires two sequential blockchain transactions (deposit to public, then buy). If the first transaction succeeds but the second fails, your funds may be temporarily locked in the contract's public balance until you retry.</li>
-              <li><strong className="text-surface-300">Separate Contract Risk:</strong> Each token type operates through its own smart contract (ETH via FhenixMarkets.sol, USDCX via FhenixMarketsUSDCX.sol, USAD via FhenixMarketsUSAD.sol). This multi-contract architecture adds composability risk.</li>
+              <li><strong className="text-surface-300">ETH:</strong> The Protocol uses native ETH via FhenixMarkets.sol for all markets.</li>
+              <li><strong className="text-surface-300">Value Risk:</strong> ETH value may fluctuate based on market conditions.</li>
             </ul>
           </section>
 

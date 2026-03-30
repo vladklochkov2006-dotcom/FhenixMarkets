@@ -37,7 +37,7 @@ export function PrivacyPolicy() {
             </p>
             <ul className="list-disc list-inside space-y-2 text-surface-400">
               <li><strong className="text-surface-300">FHE Encryption:</strong> All transactions are verified using FHE encryption, meaning your bets, positions, and balances remain private on-chain.</li>
-              <li><strong className="text-surface-300">Encrypted State:</strong> Your holdings are stored as encrypted state on the Fhenix network, visible only to you with your permit. ETH markets use encrypted ERC-20 balances, while USDCX and USAD markets use ERC-20 tokens with FHE encryption for private trading.</li>
+              <li><strong className="text-surface-300">Encrypted State:</strong> Your holdings are stored as encrypted state on the Fhenix network, visible only to you with your permit. Markets use encrypted ERC-20 balances with FHE encryption for private trading.</li>
               <li><strong className="text-surface-300">Non-Custodial:</strong> We never have access to your private keys, permits, or wallet credentials.</li>
               <li><strong className="text-surface-300">Client-Side Encryption:</strong> Any data stored locally is encrypted with AES-256-GCM before storage.</li>
             </ul>

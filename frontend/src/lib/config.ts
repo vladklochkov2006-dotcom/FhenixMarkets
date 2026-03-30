@@ -1,7 +1,8 @@
 // ============================================================================
-// VEILED MARKETS - Configuration
+// FHENIX MARKETS - Configuration
 // ============================================================================
-// Reads environment variables with type safety and defaults
+// Reads environment variables with type safety and defaults.
+// Configured for Sepolia (Fhenix CoFHE coprocessor).
 // ============================================================================
 import { devLog } from './logger'
 
@@ -11,9 +12,9 @@ import { devLog } from './logger'
 export type NetworkType = 'testnet' | 'mainnet';
 
 /**
- * Wallet type
+ * Wallet type — flexible, Privy supports many wallet types dynamically
  */
-export type WalletType = 'puzzle' | 'leo' | 'demo';
+export type WalletType = string;
 
 /**
  * Application configuration
@@ -21,32 +22,17 @@ export type WalletType = 'puzzle' | 'leo' | 'demo';
 export interface AppConfig {
   // Network
   network: NetworkType;
+  chainId: number;
   rpcUrl: string;
   explorerUrl: string;
 
-  // Block time
-  secondsPerBlock: number;
-  msPerBlock: number;
-
-  // Program
-  programId: string;
-  creditsProgramId: string;
-  usdcxProgramId: string;
-  usdcxMarketProgramId: string;
-  usadProgramId: string;
-  governanceProgramId: string;
-  // Legacy program IDs for querying old markets
-  legacyProgramIds: string[];
-  legacyUsadProgramIds: string[];
+  // Contracts
+  marketsContract: string;
+  governanceContract: string;
 
   // Wallet
   enableDemoMode: boolean;
   defaultWallet: WalletType;
-
-  // Development keys (local testing only - NEVER use in production!)
-  devPrivateKey: string | null;
-  devViewKey: string | null;
-  devAddress: string | null;
 
   // Features
   enableCreateMarket: boolean;
@@ -62,21 +48,8 @@ export interface AppConfig {
   appName: string;
   appDescription: string;
   appUrl: string;
-}
 
-/**
- * Network-specific configuration
- */
-export const NETWORK_CONFIGS = {
-  testnet: {
-    rpcUrl: 'https://api.explorer.provable.com/v1/testnet',
-    explorerUrl: 'https://testnet.explorer.provable.com',
-  },
-  mainnet: {
-    rpcUrl: 'https://api.explorer.provable.com/v1/mainnet',
-    explorerUrl: 'https://explorer.provable.com',
-  },
-} as const;
+}
 
 /**
  * Get environment variable with fallback
@@ -99,37 +72,21 @@ function getEnvBool(key: string, fallback: boolean = false): boolean {
  */
 function loadConfig(): AppConfig {
   const network = (getEnv('VITE_NETWORK', 'testnet') as NetworkType);
-  const networkConfig = NETWORK_CONFIGS[network] || NETWORK_CONFIGS.testnet;
 
   return {
-    // Network
+    // Network — Sepolia (Fhenix CoFHE coprocessor)
     network,
-    rpcUrl: getEnv('VITE_ALEO_RPC_URL', networkConfig.rpcUrl),
-    explorerUrl: getEnv('VITE_EXPLORER_URL', networkConfig.explorerUrl),
+    chainId: 11155111,
+    rpcUrl: getEnv('VITE_RPC_URL', 'https://ethereum-sepolia.publicnode.com'),
+    explorerUrl: getEnv('VITE_EXPLORER_URL', 'https://sepolia.etherscan.io'),
 
-    // Block time (measured on testnet: ~3.6s, use 4s as conservative estimate)
-    secondsPerBlock: network === 'mainnet' ? 15 : 4,
-    msPerBlock: network === 'mainnet' ? 15000 : 4000,
-
-    // Program
-    programId: getEnv('VITE_PROGRAM_ID', 'veiled_markets_v35.aleo'),
-    creditsProgramId: getEnv('VITE_CREDITS_PROGRAM_ID', 'credits.aleo'),
-    usdcxProgramId: getEnv('VITE_USDCX_PROGRAM_ID', 'test_usdcx_stablecoin.aleo'),
-    usdcxMarketProgramId: getEnv('VITE_USDCX_MARKET_PROGRAM_ID', 'veiled_markets_usdcx_v5.aleo'),
-    usadProgramId: getEnv('VITE_USAD_PROGRAM_ID', 'veiled_markets_usad_v12.aleo'),
-    governanceProgramId: getEnv('VITE_GOVERNANCE_PROGRAM_ID', 'veiled_governance_v4.aleo'),
-    // Legacy programs — markets created on older versions still live there
-    legacyProgramIds: [],
-    legacyUsadProgramIds: [],
+    // Contracts — deployed on Sepolia
+    marketsContract: getEnv('VITE_MARKETS_CONTRACT', '0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a'),
+    governanceContract: getEnv('VITE_GOVERNANCE_CONTRACT', '0x3D323bF271E86F57d7FE2614535e969bb5A9AE36'),
 
     // Wallet
     enableDemoMode: getEnvBool('VITE_ENABLE_DEMO_MODE', true),
-    defaultWallet: getEnv('VITE_DEFAULT_WALLET', 'puzzle') as WalletType,
-
-    // Development keys (local testing only)
-    devPrivateKey: getEnv('VITE_DEV_PRIVATE_KEY') || null,
-    devViewKey: getEnv('VITE_DEV_VIEW_KEY') || null,
-    devAddress: getEnv('VITE_DEV_ADDRESS') || null,
+    defaultWallet: getEnv('VITE_DEFAULT_WALLET', 'privy'),
 
     // Features
     enableCreateMarket: getEnvBool('VITE_ENABLE_CREATE_MARKET', true),
@@ -144,8 +101,9 @@ function loadConfig(): AppConfig {
     // App
     appName: getEnv('VITE_APP_NAME', 'Fhenix Markets'),
     appDescription: getEnv('VITE_APP_DESCRIPTION', 'Privacy-Preserving Prediction Markets on Fhenix'),
-    appUrl: getEnv('VITE_APP_URL', 'https://fhenix.markets'),
-  };
+    appUrl: getEnv('VITE_APP_URL', 'https://veiled.markets'),
+
+};
 }
 
 /**
@@ -173,37 +131,24 @@ export function debug(...args: unknown[]): void {
 }
 
 /**
- * Get transaction URL on explorer
- * Supports both Fhenix transaction IDs (at1...) and UUIDs
+ * Get transaction URL on Etherscan
  */
-export function getTransactionUrl(txId: string): string {
-  devLog('getTransactionUrl called with:', txId);
-
-  // Clean the transaction ID (remove any whitespace)
-  const cleanTxId = txId.trim();
-
-  // Build the URL - Provable Explorer supports both formats
-  const url = `${config.explorerUrl}/transaction/${cleanTxId}`;
-
-  devLog('Generated URL:', url);
-  devLog('Explorer base:', config.explorerUrl);
-  devLog('Transaction ID format:', cleanTxId.startsWith('at1') ? 'Fhenix format' : 'UUID format');
-
-  return url;
+export function getTransactionUrl(txHash: string): string {
+  return `${config.explorerUrl}/tx/${txHash}`;
 }
 
 /**
- * Get address URL on explorer
+ * Get address URL on Etherscan
  */
 export function getAddressUrl(address: string): string {
   return `${config.explorerUrl}/address/${address}`;
 }
 
 /**
- * Get program URL on explorer
+ * Get contract URL on Etherscan
  */
-export function getProgramUrl(programId?: string): string {
-  return `${config.explorerUrl}/program/${programId || config.programId}`;
+export function getContractUrl(address?: string): string {
+  return `${config.explorerUrl}/address/${address || config.marketsContract}`;
 }
 
 // Export default config

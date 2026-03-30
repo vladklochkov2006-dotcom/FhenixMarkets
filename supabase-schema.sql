@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS user_bets (
   type TEXT NOT NULL DEFAULT 'buy',
   market_question TEXT,
   claimed BOOLEAN NOT NULL DEFAULT FALSE,
-  token_type TEXT DEFAULT 'ALEO',
+  token_type TEXT DEFAULT 'ETH',
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (id, address)
 );
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS pending_bets (
   type TEXT NOT NULL DEFAULT 'buy',
   market_question TEXT,
   claimed BOOLEAN NOT NULL DEFAULT FALSE,
-  token_type TEXT DEFAULT 'ALEO',
+  token_type TEXT DEFAULT 'ETH',
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (id, address)
 );

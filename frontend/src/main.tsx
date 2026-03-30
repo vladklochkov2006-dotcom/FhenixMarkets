@@ -1,18 +1,11 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import { AleoWalletProvider } from '@provablehq/aleo-wallet-adaptor-react'
-import { ShieldWalletAdapter } from '@provablehq/aleo-wallet-adaptor-shield'
-import { DecryptPermission } from '@provablehq/aleo-wallet-adaptor-core'
-import { Network } from '@provablehq/aleo-types'
-import { WalletModalProvider } from '@provablehq/aleo-wallet-adaptor-react-ui'
-import '@provablehq/aleo-wallet-adaptor-react-ui/dist/styles.css'
+import { PrivyProvider } from '@privy-io/react-auth'
+import { defineChain } from 'viem'
 import App from './App'
-import { WalletBridge } from './components/WalletBridge'
+import { PrivyWalletBridge } from './components/PrivyWalletBridge'
 import './styles/globals.css'
-import { initializeQuestionMappings } from './lib/question-mapping'
-import { initializeMarketIds } from './lib/aleo-client'
-import { config } from './lib/config'
 
 function applyInitialTheme() {
   const root = document.documentElement
@@ -21,43 +14,59 @@ function applyInitialTheme() {
   root.style.colorScheme = 'dark'
 }
 
-initializeQuestionMappings()
-initializeMarketIds()
 applyInitialTheme()
 
-const wallets = [
-  new ShieldWalletAdapter(),
-]
+const PRIVY_APP_ID = import.meta.env.VITE_PRIVY_APP_ID || 'cmnc3fdce00rn0clduliqd11u'
 
+const sepoliaChain = defineChain({
+  id: 11155111,
+  name: 'Sepolia',
+  nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
+  rpcUrls: {
+    default: { http: ['https://ethereum-sepolia.publicnode.com'] },
+  },
+  blockExplorers: {
+    default: { name: 'Etherscan', url: 'https://sepolia.etherscan.io' },
+  },
+  testnet: true,
+})
+
+// ── Main App (always renders immediately) ──
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <AleoWalletProvider
-      wallets={wallets}
-      network={Network.TESTNET}
-      autoConnect={true}
-      decryptPermission={DecryptPermission.AutoDecrypt}
-      programs={[
-        config.programId,
-        config.usdcxMarketProgramId,
-        config.usadProgramId,
-        config.governanceProgramId,
-        'credits.aleo',
-        config.usdcxProgramId,
-        'test_usad_stablecoin.aleo',
-        'merkle_tree.aleo',
-        'test_usdcx_multisig_core.aleo',
-        'test_usdcx_freezelist.aleo',
-        'test_usad_multisig_core.aleo',
-        'test_usad_freezelist.aleo',
-      ]}
-      onError={(error) => console.error('[Wallet Error]', error.message)}
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>,
+)
+
+// ── Privy Provider (separate React root — syncs wallet state via Zustand) ──
+// This ensures the app always renders even if Privy is slow or blocked.
+const privyRoot = document.createElement('div')
+privyRoot.id = 'privy-root'
+document.body.appendChild(privyRoot)
+
+ReactDOM.createRoot(privyRoot).render(
+  <React.StrictMode>
+    <PrivyProvider
+      appId={PRIVY_APP_ID}
+      config={{
+        appearance: {
+          theme: 'dark',
+          accentColor: '#0AD9DC',
+          logo: '/fhenix-logo.svg',
+        },
+        loginMethods: ['wallet', 'email'],
+        embeddedWallets: {
+          ethereum: {
+            createOnLogin: 'users-without-wallets',
+          },
+        },
+        defaultChain: sepoliaChain,
+        supportedChains: [sepoliaChain],
+      }}
     >
-      <WalletModalProvider>
-        <BrowserRouter>
-          <WalletBridge />
-          <App />
-        </BrowserRouter>
-      </WalletModalProvider>
-    </AleoWalletProvider>
+      <PrivyWalletBridge />
+    </PrivyProvider>
   </React.StrictMode>,
 )

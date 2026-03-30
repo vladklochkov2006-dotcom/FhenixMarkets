@@ -19,8 +19,9 @@ import {
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useWallet } from '@provablehq/aleo-wallet-adaptor-react'
+import { usePrivyWallet as useWallet } from '@/hooks/usePrivyWallet'
 import { useWalletStore } from '@/lib/store'
+import { getWalletDisplayInfo } from '@/lib/wallet'
 import { cn, shortenAddress, formatCredits } from '@/lib/utils'
 
 const navItems = [
@@ -226,12 +227,7 @@ export function DashboardHeader() {
                     <div className="p-3 border-b border-white/[0.04]">
                       <div className="flex items-center justify-between mb-1.5">
                         <p className="text-2xs text-surface-500 uppercase tracking-wider font-semibold">
-                          {wallet.walletType === 'puzzle' && '🧩 Puzzle'}
-                          {wallet.walletType === 'leo' && '🦁 Leo'}
-                          {wallet.walletType === 'shield' && '🛡️ Shield'}
-                          {wallet.walletType === 'fox' && '🦊 Fox'}
-                          {wallet.walletType === 'soter' && '🛡️ Soter'}
-                          {wallet.walletType === 'demo' && '🎮 Demo'}
+                          {(() => { const info = getWalletDisplayInfo(wallet.walletType); return `${info.icon} ${info.name}`; })()}
                         </p>
                         <span className={cn(
                           'text-2xs font-semibold px-2 py-0.5 rounded-md uppercase tracking-wider',
@@ -275,27 +271,7 @@ export function DashboardHeader() {
                             <p className="text-xs text-surface-500">Private</p>
                             <p className="text-sm font-medium text-surface-200 tabular-nums">{formatCredits(wallet.balance.private)} <img src="/eth-logo.svg" alt="" className="w-3.5 h-3.5 rounded-full inline-block ml-0.5" /></p>
                           </div>
-                        ) : wallet.walletType === 'shield' ? (
-                          <p className="text-2xs text-surface-500 mt-1.5 leading-relaxed">
-                            Private balance detection not yet supported by MetaMask.
-                          </p>
                         ) : null}
-                        <div className="flex justify-between items-center">
-                          <p className="text-xs text-surface-500">USDCX (Public)</p>
-                          <p className="text-sm font-medium text-surface-200 tabular-nums">{formatCredits(wallet.balance.usdcxPublic)} <img src="/usdcx-logo.svg" alt="" className="w-3.5 h-3.5 rounded-full inline-block ml-0.5" /></p>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <p className="text-xs text-surface-500">USDCX (Private)</p>
-                          <p className="text-sm font-medium text-surface-200 tabular-nums">{formatCredits(wallet.balance.usdcxPrivate)} <img src="/usdcx-logo.svg" alt="" className="w-3.5 h-3.5 rounded-full inline-block ml-0.5" /></p>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <p className="text-xs text-surface-500">USAD (Public)</p>
-                          <p className="text-sm font-medium text-surface-200 tabular-nums">{formatCredits(wallet.balance.usadPublic)} <img src="/usad-logo.svg" alt="" className="w-3.5 h-3.5 rounded-full inline-block ml-0.5" /></p>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <p className="text-xs text-surface-500">USAD (Private)</p>
-                          <p className="text-sm font-medium text-surface-200 tabular-nums">{formatCredits(wallet.balance.usadPrivate)} <img src="/usad-logo.svg" alt="" className="w-3.5 h-3.5 rounded-full inline-block ml-0.5" /></p>
-                        </div>
                       </div>
                     </div>
 
@@ -307,7 +283,7 @@ export function DashboardHeader() {
                         Settings
                       </Link>
                       {!wallet.isDemoMode && (
-                        <a href={`https://testnet.explorer.provable.com/address/${wallet.address}`}
+                        <a href={`https://sepolia.etherscan.io/address/${wallet.address}`}
                           target="_blank" rel="noopener noreferrer"
                           className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs text-surface-300 hover:text-white hover:bg-white/[0.04] transition-colors">
                           <ExternalLink className="w-4 h-4" />

@@ -1,12 +1,12 @@
 import { motion } from 'framer-motion'
-import { Wallet, BarChart3, Lock, Zap, Target, ArrowRight } from 'lucide-react'
+import { Wallet, Lock, Zap, Target } from 'lucide-react'
 
 const steps = [
   {
     num: '01',
     icon: Wallet,
     title: 'Connect Wallet',
-    description: 'Connect MetaMask for encrypted transactions on the Fhenix network.',
+    description: 'Connect your wallet for encrypted transactions on the Fhenix network.',
   },
   {
     num: '02',

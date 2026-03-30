@@ -2,10 +2,9 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, TrendingDown, AlertTriangle, Loader2, Check, Shield } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { type Market } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
 import { cn, formatCredits, getTokenSymbol } from '@/lib/utils'
-import { buildSellSharesInputs, getMarket, getCurrentBlockHeight, MARKET_STATUS, getProgramIdForToken } from '@/lib/aleo-client'
 import { devWarn } from '@/lib/logger'
+import { sellShares as contractSellShares, fetchMarket, parseEth, parseContractError, ensureSepoliaNetwork, MARKET_STATUS } from '@/lib/contracts'
 import {
   calculateSellSharesNeeded,
   calculateSellNetTokens,
@@ -26,7 +25,7 @@ interface SellSharesModalProps {
 type SellStep = 'input' | 'success'
 
 export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSharesModalProps) {
-  const { executeTransaction } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const [tokensDesired, setTokensDesired] = useState('')
   const [slippage, setSlippage] = useState(2) // 2% default
@@ -35,7 +34,7 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
   const [transactionId, setTransactionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const tokenSymbol = getTokenSymbol(market.tokenType)
+  const tokenSymbol = getTokenSymbol('ETH')
 
   // Build reserves from market data
   const reserves: AMMReserves = useMemo(() => ({
@@ -64,19 +63,19 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
     return calculateMaxTokensDesired(reserves, shareOutcome, totalShares)
   }, [reserves, shareOutcome, totalShares])
 
-  const tokensDesiredMicro = tokensDesired
-    ? BigInt(Math.floor(parseFloat(tokensDesired) * 1_000_000))
+  const tokensDesiredWei = tokensDesired
+    ? parseEth(tokensDesired)
     : 0n
 
   // Compute shares needed and net tokens
   const sellPreview = useMemo(() => {
-    if (tokensDesiredMicro <= 0n) return null
+    if (tokensDesiredWei <= 0n) return null
 
-    const sharesNeeded = calculateSellSharesNeeded(reserves, shareOutcome, tokensDesiredMicro)
+    const sharesNeeded = calculateSellSharesNeeded(reserves, shareOutcome, tokensDesiredWei)
     const maxSharesUsed = (sharesNeeded * BigInt(Math.floor((100 + slippage) * 100))) / 10000n
-    const netTokens = calculateSellNetTokens(tokensDesiredMicro)
-    const fees = calculateFees(tokensDesiredMicro)
-    const priceImpact = calculateSellPriceImpact(reserves, shareOutcome, tokensDesiredMicro)
+    const netTokens = calculateSellNetTokens(tokensDesiredWei)
+    const fees = calculateFees(tokensDesiredWei)
+    const priceImpact = calculateSellPriceImpact(reserves, shareOutcome, tokensDesiredWei)
 
     return {
       sharesNeeded,
@@ -86,12 +85,12 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
       priceImpact,
       exceedsBalance: maxSharesUsed > totalShares,
     }
-  }, [reserves, shareOutcome, tokensDesiredMicro, slippage, totalShares])
+  }, [reserves, shareOutcome, tokensDesiredWei, slippage, totalShares])
 
   const highPriceImpact = sellPreview ? Math.abs(sellPreview.priceImpact) > 5 : false
 
   const handleSell = async () => {
-    if (!tokensDesired || tokensDesiredMicro <= 0n || !sellPreview) return
+    if (!tokensDesired || tokensDesiredWei <= 0n || !sellPreview) return
 
     setIsSelling(true)
     setError(null)
@@ -103,65 +102,44 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
         )
       }
 
-      // Pre-validate market status and token type before submitting
-      const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
+      // Pre-validate market status on-chain
       try {
-        const [onChainMarket, currentBlock] = await Promise.all([
-          getMarket(market.id),
-          getCurrentBlockHeight(),
-        ])
-        if (onChainMarket) {
-          if (onChainMarket.status !== MARKET_STATUS.ACTIVE) {
-            const statusNames: Record<number, string> = {
-              2: 'CLOSED', 3: 'RESOLVED', 4: 'CANCELLED', 5: 'PENDING_RESOLUTION'
-            }
-            throw new Error(
-              `Market is ${statusNames[onChainMarket.status] || 'not active'}. Trading is no longer available.`
-            )
-          }
-          if (currentBlock > onChainMarket.deadline) {
-            throw new Error('Betting deadline has passed. Trading is no longer available.')
-          }
-          // Validate token type matches on-chain (prevents transition/finalize mismatch)
-          const onChainIsUsdcx = onChainMarket.token_type === 2
-          const uiIsUsdcx = tokenType === 'USDCX'
-          if (uiIsUsdcx !== onChainIsUsdcx) {
-            throw new Error(
-              `Token type mismatch: UI shows ${tokenType} but on-chain market uses ${onChainIsUsdcx ? 'USDCX' : 'ETH'}. Please refresh the page.`
-            )
-          }
+        const onChainMarket = await fetchMarket(market.id)
+        if (onChainMarket && onChainMarket.status !== MARKET_STATUS.OPEN) {
+          throw new Error('Market is not open. Trading is no longer available.')
+        }
+        const now = BigInt(Math.floor(Date.now() / 1000))
+        if (onChainMarket && now > onChainMarket.deadline) {
+          throw new Error('Betting deadline has passed. Trading is no longer available.')
         }
       } catch (validationErr) {
         if (validationErr instanceof Error &&
-            (validationErr.message.includes('Market is') || validationErr.message.includes('deadline has passed') || validationErr.message.includes('Token type mismatch'))) {
+            (validationErr.message.includes('not open') || validationErr.message.includes('deadline'))) {
           throw validationErr
         }
         devWarn('Pre-validation skipped (network error):', validationErr)
       }
 
-      const { functionName, inputs } = buildSellSharesInputs(
-        shareRecord,
-        tokensDesiredMicro,
-        sellPreview.maxSharesUsed,
-        tokenType,
+      await ensureSepoliaNetwork()
+
+      // Call sellShares on-chain
+      // outcomeIndex should come from the share record
+      const outcomeIndex = shareOutcome
+      const sharesToSell = sellPreview.maxSharesUsed
+      const minTokensOut = tokensDesiredWei
+
+      const receipt = await contractSellShares(
+        market.id,
+        outcomeIndex,
+        sharesToSell,
+        minTokensOut,
       )
 
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs,
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-        setStep('success')
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      setTransactionId(receipt.hash)
+      setStep('success')
     } catch (err: unknown) {
       console.error('Failed to sell shares:', err)
-      setError(err instanceof Error ? err.message : 'Failed to sell shares')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to sell shares')
     } finally {
       setIsSelling(false)
     }
@@ -260,7 +238,7 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
                           <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
                             <button
                               onClick={() => setTokensDesired(
-                                (Number(maxTokens) / 1_000_000).toString()
+                                (Number(maxTokens) / 1e18).toString()
                               )}
                               className="text-xs text-brand-400 hover:text-brand-300"
                             >
@@ -295,7 +273,7 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
                       </div>
 
                       {/* Quote Preview */}
-                      {sellPreview && tokensDesiredMicro > 0n && (
+                      {sellPreview && tokensDesiredWei > 0n && (
                         <div className="p-4 rounded-xl bg-white/[0.03] space-y-3">
                           <div className="flex justify-between items-center">
                             <span className="text-surface-400 text-sm">Shares Used</span>

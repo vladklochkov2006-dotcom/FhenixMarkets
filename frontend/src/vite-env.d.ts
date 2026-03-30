@@ -3,7 +3,7 @@
 interface ImportMetaEnv {
   // Network
   readonly VITE_NETWORK: 'testnet' | 'mainnet';
-  readonly VITE_ALEO_RPC_URL: string;
+  readonly VITE_RPC_URL: string;
   readonly VITE_EXPLORER_URL: string;
   
   // Program
@@ -12,7 +12,7 @@ interface ImportMetaEnv {
   
   // Wallet
   readonly VITE_ENABLE_DEMO_MODE: string;
-  readonly VITE_DEFAULT_WALLET: 'puzzle' | 'leo';
+  readonly VITE_DEFAULT_WALLET: string;
   
   // Development Keys (local testing only)
   readonly VITE_DEV_PRIVATE_KEY?: string;

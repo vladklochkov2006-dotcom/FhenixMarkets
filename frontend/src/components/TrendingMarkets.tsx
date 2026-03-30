@@ -118,12 +118,7 @@ function TrendingCard({ market, index }: { market: Market; index: number }) {
               <div className="grid grid-cols-2 gap-1.5">
                 {outcomeLabels.map((label, i) => {
                   const pct = (prices[i] ?? 0) * 100
-                  const OUTCOME_DOT_COLORS = [
-                    'bg-yes-500', 'bg-no-500', 'bg-purple-500', 'bg-brand-500'
-                  ]
-                  const OUTCOME_BORDER_COLORS = [
-                    'border-yes-500/20', 'border-no-500/20', 'border-purple-500/20', 'border-brand-500/20'
-                  ]
+                  // DOT_COLORS and BORDER_COLORS reserved for future use
                   const OUTCOME_BG_COLORS = [
                     'bg-yes-500/5', 'bg-no-500/5', 'bg-purple-500/5', 'bg-brand-500/5'
                   ]

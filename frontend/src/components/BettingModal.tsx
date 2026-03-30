@@ -2,12 +2,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Shield, TrendingUp, Check, Loader2, AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 import { type Market, useWalletStore, useBetsStore } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
-import { cn, formatCredits, formatPercentage, getCategoryName, getCategoryEmoji, getTokenSymbol } from '@/lib/utils'
+import { cn, formatCredits, formatPercentage, getCategoryName, getCategoryEmoji } from '@/lib/utils'
 import { TransactionLink } from './TransactionLink'
-import { buildBuySharesInputs, getMarket, MARKET_STATUS, getProgramIdForToken } from '@/lib/aleo-client'
-import { fetchCreditsRecord } from '@/lib/credits-record'
 import { devWarn } from '../lib/logger'
+import { buyShares as contractBuyShares, fetchMarket, parseEth, parseContractError, ensureSepoliaNetwork, MARKET_STATUS } from '@/lib/contracts'
 
 interface BettingModalProps {
   market: Market | null
@@ -20,8 +18,8 @@ type BetStep = 'select' | 'amount' | 'confirm' | 'success'
 
 export function BettingModal({ market, isOpen, onClose }: BettingModalProps) {
   const { wallet } = useWalletStore()
-  const { addPendingBet, confirmPendingBet, removePendingBet } = useBetsStore()
-  const { executeTransaction, pollTransactionStatus } = useAleoTransaction()
+  const { addPendingBet, confirmPendingBet } = useBetsStore()
+  // Contract calls via contracts.ts — no legacy adapter
 
   const [selectedOutcome, setSelectedOutcome] = useState<BetOutcome>(null)
   const [betAmount, setBetAmount] = useState('')
@@ -38,152 +36,73 @@ export function BettingModal({ market, isOpen, onClose }: BettingModalProps) {
     setError(null)
 
     try {
-      if (!market.id.endsWith('field')) {
+      if (!market.id.startsWith('0x')) {
         throw new Error(
           'This is a demo market for UI preview only. ' +
           'To place real bets, use markets created via the "Create Market" button.'
         )
       }
 
-      const amountMicro = BigInt(Math.floor(parseFloat(betAmount) * 1_000_000))
-      const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
+      const amountWei = parseEth(betAmount)
+      const outcomeNum = selectedOutcome === 'yes' ? 1 : 2
 
-      // Pre-validate market status on-chain to avoid wasted gas
+      // Pre-validate market status on-chain
       try {
-        const onChainMarket = await getMarket(market.id, getProgramIdForToken(tokenType))
-        if (onChainMarket && onChainMarket.status !== MARKET_STATUS.ACTIVE) {
-          const statusNames: Record<number, string> = { 2: 'CLOSED', 3: 'RESOLVED', 4: 'CANCELLED' }
-          throw new Error(
-            `Market is ${statusNames[onChainMarket.status] || 'not active'} on-chain. Betting is no longer available.`
-          )
+        const onChainMarket = await fetchMarket(market.id)
+        if (onChainMarket && onChainMarket.status !== MARKET_STATUS.OPEN) {
+          throw new Error('Market is not open. Betting is no longer available.')
+        }
+        const now = BigInt(Math.floor(Date.now() / 1000))
+        if (onChainMarket && now > onChainMarket.deadline) {
+          throw new Error('Betting deadline has passed.')
         }
       } catch (validationErr) {
-        if (validationErr instanceof Error && validationErr.message.includes('Market is')) {
+        if (validationErr instanceof Error &&
+            (validationErr.message.includes('not open') || validationErr.message.includes('deadline'))) {
           throw validationErr
         }
         devWarn('Pre-validation skipped (network error):', validationErr)
       }
 
-      const outcomeNum = selectedOutcome === 'yes' ? 1 : 2
-      let functionName = ''
-      let inputs: string[] = []
-      const feeInMicro = 1_500_000n
-      let releaseSelectedRecord: (() => void) | null = null
+      // Ensure Sepolia network
+      await ensureSepoliaNetwork()
+      setPrivacyMode('private') // All shares are FHE-encrypted
 
-      if (tokenType === 'USDCX' || tokenType === 'USAD') {
-        if (!wallet.isDemoMode && wallet.balance.public < feeInMicro) {
-          throw new Error('Insufficient public ETH for transaction fee. Gas fees are always paid in public ETH.')
-        }
-        const totalStablecoin = tokenType === 'USDCX'
-          ? wallet.balance.usdcxPublic + wallet.balance.usdcxPrivate
-          : wallet.balance.usadPublic + wallet.balance.usadPrivate
-        if (!wallet.isDemoMode && amountMicro > totalStablecoin) {
-          throw new Error(
-            `Insufficient ${tokenType} balance. Need ${(Number(amountMicro) / 1_000_000).toFixed(2)} ${tokenType} ` +
-            `but only have ${(Number(totalStablecoin) / 1_000_000).toFixed(2)} ${tokenType}.`
-          )
-        }
-        const betResult = buildBuySharesInputs(market.id, outcomeNum, amountMicro, 0n, 0n, tokenType)
-        functionName = betResult.functionName
-        inputs = betResult.inputs
-        const privateStablecoin = tokenType === 'USDCX' ? wallet.balance.usdcxPrivate : wallet.balance.usadPrivate
-        setPrivacyMode(privateStablecoin > 0n ? 'private' : 'public')
-      } else {
-        if (!wallet.isDemoMode && wallet.balance.public < feeInMicro) {
-          throw new Error('Insufficient public ETH for transaction fee. Gas fees are always paid in public ETH.')
-        }
-        // ETH: buy_shares_private with credits record
-        const totalNeeded = Number(amountMicro)
-        const { reserveCreditsRecord, releaseCreditsRecord } = await import('@/lib/credits-record')
-        const creditsRecord = await fetchCreditsRecord(totalNeeded, wallet.address)
-        if (!creditsRecord) {
-          throw new Error(
-            `Could not find a Credits record with at least ${(totalNeeded / 1_000_000).toFixed(2)} ETH. ` +
-            `Private betting requires an unspent Credits record.`
-          )
-        }
-        reserveCreditsRecord(creditsRecord)
-        releaseSelectedRecord = () => releaseCreditsRecord(creditsRecord)
-        const betResult = buildBuySharesInputs(market.id, outcomeNum, amountMicro, 0n, 0n, 'ETH', creditsRecord)
-        functionName = betResult.functionName
-        inputs = betResult.inputs
-        setPrivacyMode('private')
-      }
+      // Call buyShares on-chain (triggers wallet popup, waits for receipt)
+      const receipt = await contractBuyShares(
+        market.id,
+        outcomeNum,
+        0n, // minSharesOut — 0 for simple betting modal
+        amountWei,
+      )
 
-      devWarn('[Bet] Using', functionName, '— public mode, inputs:', inputs)
+      const txHash = receipt.hash
+      setTransactionId(txHash)
+      setStep('success')
 
-      // v8: Single TX — append Token record + MerkleProof for stablecoins
-      const WALLET_TIMEOUT_MS = 120_000
-      if (tokenType === 'USDCX' || tokenType === 'USAD') {
-        const { findTokenRecord, reserveTokenRecord, releaseTokenRecord } = await import('@/lib/private-stablecoin')
-        const { buildMerkleProofsForAddress } = await import('@/lib/aleo-client')
-        const tokenRecord = await findTokenRecord(tokenType, amountMicro)
-        if (tokenRecord) {
-          if (!wallet.address) {
-            throw new Error('Wallet address is unavailable. Please reconnect your wallet and try again.')
-          }
-          reserveTokenRecord(tokenType, tokenRecord)
-          releaseSelectedRecord = () => releaseTokenRecord(tokenType, tokenRecord)
-          inputs.push(tokenRecord)
-          inputs.push(await buildMerkleProofsForAddress(wallet.address))
-        } else {
-          throw new Error(
-            `No private ${tokenType} Token record found. Please unshield ${tokenType} in MetaMask first.`
-          )
-        }
-      }
-      const txPromise = executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs: inputs,
-        fee: 1.5,
-        recordIndices: [6],
+      // Track bet locally
+      addPendingBet({
+        id: txHash,
+        marketId: market.id,
+        amount: amountWei,
+        outcome: selectedOutcome,
+        placedAt: Date.now(),
+        status: 'pending',
+        marketQuestion: market.question,
+        lockedMultiplier: selectedOutcome === 'yes'
+          ? market.potentialYesPayout
+          : market.potentialNoPayout,
+        tokenType: 'ETH',
       })
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(
-          'Wallet did not respond within 2 minutes. The transaction may still be processing. ' +
-          'Check your wallet extension for pending transactions.'
-        )), WALLET_TIMEOUT_MS)
-      })
-      const result = await Promise.race([txPromise, timeoutPromise])
 
-      if (result?.transactionId) {
-        const submittedTxId = result.transactionId
-        setTransactionId(submittedTxId)
-        setStep('success')
+      // Already confirmed (receipt returned)
+      confirmPendingBet(txHash, txHash)
 
-        addPendingBet({
-          id: submittedTxId,
-          marketId: market.id,
-          amount: amountMicro,
-          outcome: selectedOutcome,
-          placedAt: Date.now(),
-          status: 'pending',
-          marketQuestion: market.question,
-          lockedMultiplier: selectedOutcome === 'yes'
-            ? market.potentialYesPayout
-            : market.potentialNoPayout,
-          tokenType: market.tokenType || 'ETH',
-        })
-
-        pollTransactionStatus(submittedTxId, (status, onChainTxId) => {
-          if (status === 'confirmed') {
-            confirmPendingBet(submittedTxId, onChainTxId)
-            return
-          }
-          if (status === 'failed') {
-            releaseSelectedRecord?.()
-            removePendingBet(submittedTxId)
-            devWarn('[BettingModal] Removed rejected buy from portfolio:', submittedTxId)
-          }
-        }, 30, 10_000)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      // Refresh balance
+      setTimeout(() => useWalletStore.getState().refreshBalance(), 3000)
     } catch (err: unknown) {
-      releaseSelectedRecord?.()
       console.error('Failed to place bet:', err)
-      const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred. Please try again.'
+      const errorMessage = err instanceof Error ? parseContractError(err) : 'An unknown error occurred.'
       setError(errorMessage)
     } finally {
       setIsPlacing(false)
@@ -205,15 +124,7 @@ export function BettingModal({ market, isOpen, onClose }: BettingModalProps) {
     : 0
 
   const isExpired = market ? (market.timeRemaining === 'Ended' || market.status !== 1) : false
-  const marketTokenType = (market?.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-  const tokenSymbol = market ? getTokenSymbol(market.tokenType) : 'ETH'
-  const isStablecoin = marketTokenType === 'USDCX' || marketTokenType === 'USAD'
-  const stablecoinTotalBalance = marketTokenType === 'USDCX'
-    ? wallet.balance.usdcxPublic + wallet.balance.usdcxPrivate
-    : wallet.balance.usadPublic + wallet.balance.usadPrivate
-  const stablecoinPrivateBalance = marketTokenType === 'USDCX'
-    ? wallet.balance.usdcxPrivate
-    : wallet.balance.usadPrivate
+  const tokenSymbol = 'ETH'
 
   if (!market) return null
 
@@ -401,21 +312,14 @@ export function BettingModal({ market, isOpen, onClose }: BettingModalProps) {
                         <div className="mt-2 space-y-1">
                           <div className="flex justify-between text-sm">
                             <span className="text-surface-500">
-                              {isStablecoin
-                                ? `Balance: ${formatCredits(stablecoinTotalBalance)} ${marketTokenType} (private: ${formatCredits(stablecoinPrivateBalance)})`
-                                : `Public: ${formatCredits(wallet.balance.public)} ETH`
-                              }
+                              {`Public: ${formatCredits(wallet.balance.public)} ETH`}
                             </span>
                             <button
                               onClick={() => {
-                                if (isStablecoin) {
-                                  const usable = stablecoinTotalBalance
-                                  setBetAmount((Number(usable) / 1_000_000).toString())
-                                } else {
-                                  // Public balance minus gas reserve (~0.7 ETH for tx fee)
-                                  const usable = wallet.balance.public > 700_000n ? wallet.balance.public - 700_000n : 0n
-                                  setBetAmount((Number(usable) / 1_000_000).toString())
-                                }
+                                // Public balance minus gas reserve (~0.7 ETH for tx fee)
+                                const gasReserve = 700_000_000_000_000n // ~0.0007 ETH for gas
+                                const usable = wallet.balance.public > gasReserve ? wallet.balance.public - gasReserve : 0n
+                                setBetAmount((Number(usable) / 1e18).toString())
                               }}
                               className="text-brand-400 hover:text-brand-300"
                             >
@@ -451,21 +355,14 @@ export function BettingModal({ market, isOpen, onClose }: BettingModalProps) {
                         <div>
                           <p className="text-sm font-medium text-brand-300">Secure Transaction</p>
                           <p className="text-xs text-surface-400 mt-1">
-                            {marketTokenType === 'USDCX'
-                              ? 'USDCX market — private Token record used when available. Your address stays hidden on-chain.'
-                              : marketTokenType === 'USAD'
-                              ? 'USAD market — private Token record used when available. Your address stays hidden on-chain.'
-                              : 'Bet uses private credits record. FHE encryption verifies your transaction on-chain.'
-                            }
+                            Bet uses private credits record. FHE encryption verifies your transaction on-chain.
                           </p>
                         </div>
                       </div>
 
                       {/* Warning: insufficient balance */}
                       {!wallet.isDemoMode && (() => {
-                        const hasNoFunds = isStablecoin
-                          ? stablecoinTotalBalance < 1_000_000n
-                          : wallet.balance.public < 1_000_000n
+                        const hasNoFunds = wallet.balance.public < 1_000_000_000_000_000n // < 0.001 ETH
                         if (!hasNoFunds) return null
                         return (
                           <div className="flex items-start gap-3 p-4 rounded-xl bg-brand-500/10 border border-brand-500/20 mb-6">
@@ -473,10 +370,7 @@ export function BettingModal({ market, isOpen, onClose }: BettingModalProps) {
                             <div>
                               <p className="text-sm font-medium text-brand-300 mb-1">Insufficient balance</p>
                               <p className="text-xs text-surface-400 leading-relaxed">
-                                {isStablecoin
-                                  ? `You need private ${marketTokenType} Token balance to bet on this market, plus ETH for gas.`
-                                  : `You need ETH (public or private) to place a bet. Public balance is needed for the transaction fee.`
-                                }
+                                You need ETH (public or private) to place a bet. Public balance is needed for the transaction fee.
                               </p>
                             </div>
                           </div>

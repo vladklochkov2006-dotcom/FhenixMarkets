@@ -1,21 +1,18 @@
 import { motion } from 'framer-motion'
-import { Droplets, Plus, Minus, Loader2, AlertCircle, Check, RefreshCw, Edit3, Info } from 'lucide-react'
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { Droplets, Plus, Minus, Loader2, AlertCircle, Check, Info } from 'lucide-react'
+import { useState, useMemo } from 'react'
 import { type Market, useWalletStore } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
-import { cn, formatCredits, getTokenSymbol } from '@/lib/utils'
+import { cn, formatCredits } from '@/lib/utils'
 import {
-  buildAddLiquidityInputs,
-  buildWithdrawLpResolvedInputs,
-  buildClaimLpRefundInputs,
-  formatTimeRemaining,
-  getCurrentBlockHeight,
+  addLiquidity as contractAddLiquidity,
+  withdrawLiquidity as contractWithdrawLiquidity,
+  claimLPRefund as contractClaimLPRefund,
+  parseEth,
+  parseContractError,
+  ensureSepoliaNetwork,
   MARKET_STATUS,
-  getProgramIdForToken,
-  WINNER_CLAIM_PRIORITY_BLOCKS,
-} from '@/lib/aleo-client'
+} from '@/lib/contracts'
 import { calculateLPSharesOut } from '@/lib/amm'
-import { fetchLPTokenRecords, type ParsedLPToken } from '@/lib/credits-record'
 import { TransactionLink } from './TransactionLink'
 
 interface LiquidityPanelProps {
@@ -26,98 +23,25 @@ type LiquidityTab = 'add' | 'withdraw'
 
 export function LiquidityPanel({ market }: LiquidityPanelProps) {
   const { wallet } = useWalletStore()
-  const { executeTransaction } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const isResolved = market.status === MARKET_STATUS.RESOLVED
   const isCancelled = market.status === MARKET_STATUS.CANCELLED
-  const isMarketEnded = market.status !== MARKET_STATUS.ACTIVE
+  const isMarketEnded = market.status !== MARKET_STATUS.OPEN
   const isCreator = wallet.address && market.creator && wallet.address === market.creator
 
   const [activeTab, setActiveTab] = useState<LiquidityTab>(
     isResolved || isCancelled ? 'withdraw' : 'add'
   )
   const [amount, setAmount] = useState('')
-  const [lpTokenRecord, setLpTokenRecord] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [transactionId, setTransactionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // LP Token record fetching
-  const [lpTokens, setLpTokens] = useState<ParsedLPToken[]>([])
-  const [selectedLPIndex, setSelectedLPIndex] = useState<number>(-1)
-  const [isFetchingLP, setIsFetchingLP] = useState(false)
-  const [lpFetchError, setLpFetchError] = useState<string | null>(null)
-  const [showManualPaste, setShowManualPaste] = useState(false)
-  const [currentBlock, setCurrentBlock] = useState<bigint | null>(null)
-  const lpFetchedRef = useRef(false)
+  // LP share amount for withdraw (user enters amount in ETH)
+  const [lpSharesInput, setLpSharesInput] = useState('')
 
-  const fetchLPTokens = useCallback(async () => {
-    if (!wallet.connected) return
-    setIsFetchingLP(true)
-    setLpFetchError(null)
-    try {
-      // Timeout after 8s — requestRecords can hang if wallet has no records for this program
-      const records = await Promise.race([
-        fetchLPTokenRecords(getProgramIdForToken((market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'), market.id),
-        new Promise<ParsedLPToken[]>((resolve) => setTimeout(() => resolve([]), 8_000)),
-      ])
-      lpFetchedRef.current = true
-      setLpTokens(records)
-      if (records.length > 0) {
-        setSelectedLPIndex(0)
-        setLpTokenRecord(records[0].plaintext)
-        setShowManualPaste(false)
-      } else {
-        setSelectedLPIndex(-1)
-        setLpTokenRecord('')
-      }
-    } catch (err) {
-      lpFetchedRef.current = true
-      setLpFetchError(err instanceof Error ? err.message : 'Failed to fetch LP tokens')
-    } finally {
-      setIsFetchingLP(false)
-    }
-  }, [wallet.connected, market.id])
-
-  // Auto-fetch LP tokens once when switching to remove/withdraw tab
-  useEffect(() => {
-    if (activeTab === 'withdraw' && wallet.connected && !lpFetchedRef.current && !isFetchingLP) {
-      fetchLPTokens()
-    }
-  }, [activeTab, wallet.connected, isFetchingLP, fetchLPTokens])
-
-  useEffect(() => {
-    if (!isResolved) {
-      setCurrentBlock(null)
-      return
-    }
-
-    let cancelled = false
-    const updateCurrentBlock = async () => {
-      try {
-        const height = await getCurrentBlockHeight()
-        if (!cancelled) {
-          setCurrentBlock(height)
-        }
-      } catch {
-        if (!cancelled) {
-          setCurrentBlock(null)
-        }
-      }
-    }
-
-    void updateCurrentBlock()
-    const intervalId = window.setInterval(() => {
-      void updateCurrentBlock()
-    }, 30_000)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-    }
-  }, [isResolved, market.id])
-
-  const tokenSymbol = getTokenSymbol(market.tokenType)
+  const tokenSymbol = 'ETH'
 
   // v20: Use total reserves (sum of AMM reserves) for LP calculations
   const totalReserves = (market.yesReserve ?? 0n) + (market.noReserve ?? 0n)
@@ -130,117 +54,54 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
     ? market.remainingCredits
     : totalLiquidity
 
-  const amountMicro = amount
-    ? BigInt(Math.floor(parseFloat(amount) * 1_000_000))
+  const amountWei = amount
+    ? parseEth(amount)
     : 0n
 
-  const winnerClaimUnlockBlock = useMemo(() => {
-    if (!isResolved || market.challengeDeadline === undefined) return null
-    return market.challengeDeadline + WINNER_CLAIM_PRIORITY_BLOCKS
-  }, [isResolved, market.challengeDeadline])
-
-  const winnerClaimWindowActive = isResolved
-    && !isCancelled
-    && (winnerClaimUnlockBlock === null || currentBlock === null || currentBlock <= winnerClaimUnlockBlock)
-
-  const winnerClaimTimeRemaining = winnerClaimUnlockBlock !== null && currentBlock !== null
-    ? formatTimeRemaining(winnerClaimUnlockBlock, currentBlock)
-    : null
+  // On Ethereum, winner claim window is not block-based; disable the concept
+  const winnerClaimWindowActive = false
+  const winnerClaimTimeRemaining: string | null = null
 
   // Calculate LP shares for adding
   const lpSharesOut = useMemo(() => {
-    if (amountMicro <= 0n) return 0n
-    return calculateLPSharesOut(amountMicro, totalLPShares, totalReserves)
-  }, [amountMicro, totalLPShares, totalReserves])
+    if (amountWei <= 0n) return 0n
+    return calculateLPSharesOut(amountWei, totalLPShares, totalReserves)
+  }, [amountWei, totalLPShares, totalReserves])
 
   const handleAddLiquidity = async () => {
-    if (!amount || amountMicro <= 0n) return
+    if (!amount || amountWei <= 0n) return
 
     setIsSubmitting(true)
     setError(null)
 
     try {
-      const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-      // CRITICAL: expected_lp_shares is stored in the LP Token record output.
-      // If 0, the LP Token will have 0 shares — useless for LP withdrawal.
-      // Apply 1% slippage buffer to the frontend estimate.
-      const slippageBuffer = lpSharesOut * 1n / 100n
-      const expectedLpShares = lpSharesOut > slippageBuffer ? lpSharesOut - slippageBuffer : 1n
-      const { functionName, inputs } = buildAddLiquidityInputs(
-        market.id,
-        amountMicro,
-        expectedLpShares,
-        tokenType,
-      )
-
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs,
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const receipt = await contractAddLiquidity(market.id, amountWei)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to add liquidity:', err)
-      setError(err instanceof Error ? err.message : 'Failed to add liquidity')
+      setError(parseContractError(err))
     } finally {
       setIsSubmitting(false)
     }
   }
 
   const handleWithdrawLpResolved = async () => {
-    if (!lpTokenRecord) return
+    const lpSharesWei = lpSharesInput ? parseEth(lpSharesInput) : 0n
+    if (lpSharesWei <= 0n) return
 
     setIsSubmitting(true)
     setError(null)
 
     try {
-      if (winnerClaimWindowActive) {
-        throw new Error(
-          winnerClaimTimeRemaining
-            ? `Winner claims still have priority for about ${winnerClaimTimeRemaining}. LP withdrawals unlock after that window ends.`
-            : 'Winner claims still have priority. LP withdrawals are temporarily locked until the winner claim window ends.'
-        )
-      }
-
-      const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-      // CRITICAL: min_tokens_out is used as the ACTUAL transfer amount in the transition.
-      // Estimate LP share value from on-chain pool data, apply 2% slippage buffer.
-      // For cancelled markets, each LP share = proportional to total_liquidity / total_lp_shares.
-      const selectedLP = lpTokens.length > 0 && selectedLPIndex >= 0 ? lpTokens[selectedLPIndex] : null
-      const lpSharesForWithdraw = selectedLP ? selectedLP.lpShares : 0n
-      const estimatedOut = totalLPShares > 0n
-        ? (lpSharesForWithdraw * displayLiquidity) / totalLPShares
-        : 0n
-      const slippageBuffer = estimatedOut * 2n / 100n // 2% slippage for resolved/cancelled
-      const minTokensOut = estimatedOut > slippageBuffer ? estimatedOut - slippageBuffer : 1n
-      const builder = isCancelled ? buildClaimLpRefundInputs : buildWithdrawLpResolvedInputs
-      const { functionName, inputs } = builder(
-        lpTokenRecord,
-        minTokensOut,
-        tokenType,
-      )
-
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs,
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const receipt = isCancelled
+        ? await contractClaimLPRefund(market.id, lpSharesWei)
+        : await contractWithdrawLiquidity(market.id, lpSharesWei)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to withdraw LP:', err)
-      setError(err instanceof Error ? err.message : 'Failed to withdraw LP')
+      setError(parseContractError(err))
     } finally {
       setIsSubmitting(false)
     }
@@ -248,7 +109,7 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
 
   const resetState = () => {
     setAmount('')
-    setLpTokenRecord('')
+    setLpSharesInput('')
     setTransactionId(null)
     setError(null)
   }
@@ -359,40 +220,41 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
                   </div>
                 )}
 
-                {/* LP Token Record — auto-fetch or manual */}
-                <LPTokenSelector
-                  lpTokens={lpTokens}
-                  selectedLPIndex={selectedLPIndex}
-                  isFetchingLP={isFetchingLP}
-                  lpFetchError={lpFetchError}
-                  showManualPaste={showManualPaste}
-                  lpTokenRecord={lpTokenRecord}
-                  onSelect={(idx: number) => {
-                    setSelectedLPIndex(idx)
-                    setLpTokenRecord(lpTokens[idx].plaintext)
-                  }}
-                  onManualChange={setLpTokenRecord}
-                  onToggleManual={() => setShowManualPaste(!showManualPaste)}
-                  onRefresh={fetchLPTokens}
-                  tokenSymbol={tokenSymbol}
-                />
+                {/* LP Shares Amount Input */}
+                <div>
+                  <label className="block text-sm text-surface-400 mb-2">
+                    LP Shares to Withdraw
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={lpSharesInput}
+                      onChange={(e) => setLpSharesInput(e.target.value)}
+                      placeholder="0.00"
+                      className="input-field text-xl font-semibold pr-20"
+                    />
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-surface-400 text-sm">
+                      LP shares
+                    </div>
+                  </div>
+                </div>
 
                 {/* Non-creator notice */}
                 {!isCreator && wallet.connected && (
                   <div className="flex items-start gap-2.5 p-3 rounded-lg bg-brand-500/10 border border-brand-500/20">
                     <Info className="w-4 h-4 text-brand-400 flex-shrink-0 mt-0.5" />
                     <p className="text-xs text-brand-300/90 leading-relaxed">
-                      Your wallet is not the creator of this market. You can only withdraw LP if you previously added liquidity via <span className="font-mono font-semibold">add_liquidity</span> and hold an LP Token record for this market.
+                      Your wallet is not the creator of this market. You can only withdraw LP if you previously added liquidity.
                     </p>
                   </div>
                 )}
 
                 <button
                   onClick={handleWithdrawLpResolved}
-                  disabled={!lpTokenRecord || isSubmitting || winnerClaimWindowActive}
+                  disabled={!lpSharesInput || parseFloat(lpSharesInput) <= 0 || isSubmitting}
                   className={cn(
                     'w-full flex items-center justify-center gap-2 btn-primary',
-                    (!lpTokenRecord || winnerClaimWindowActive) && 'opacity-50 cursor-not-allowed'
+                    (!lpSharesInput || parseFloat(lpSharesInput) <= 0) && 'opacity-50 cursor-not-allowed'
                   )}
                 >
                   {isSubmitting ? (
@@ -436,19 +298,15 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
                   </div>
                   <div className="flex justify-between text-sm mt-2">
                     <span className="text-surface-500">
-                      Balance: {formatCredits(
-                        market.tokenType === 'USDCX'
-                          ? wallet.balance.usdcxPublic
-                          : wallet.balance.public
-                      )} {tokenSymbol}
+                      Balance: {formatCredits(wallet.balance.public)} {tokenSymbol}
                     </span>
                     <button
                       onClick={() => {
-                        const bal = market.tokenType === 'USDCX'
-                          ? wallet.balance.usdcxPublic
-                          : wallet.balance.public
-                        const usable = bal > 700_000n ? bal - 700_000n : 0n
-                        setAmount((Number(usable) / 1_000_000).toString())
+                        const bal = wallet.balance.public
+                        // Reserve some ETH for gas
+                        const gasReserve = parseEth('0.01')
+                        const usable = bal > gasReserve ? bal - gasReserve : 0n
+                        setAmount((Number(usable) / 1e18).toString())
                       }}
                       className="text-brand-400 hover:text-brand-300"
                     >
@@ -458,7 +316,7 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
                 </div>
 
                 {/* LP Shares Preview */}
-                {amountMicro > 0n && (
+                {amountWei > 0n && (
                   <div className="p-4 rounded-xl bg-white/[0.03]">
                     <div className="flex justify-between items-center">
                       <span className="text-surface-400 text-sm">LP Shares You Receive</span>
@@ -470,7 +328,7 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
                       <span className="text-surface-400 text-sm">Share of Pool</span>
                       <span className="text-surface-300 text-sm">
                         {totalLiquidity > 0n
-                          ? ((Number(amountMicro) / Number(totalLiquidity + amountMicro)) * 100).toFixed(2)
+                          ? ((Number(amountWei) / Number(totalLiquidity + amountWei)) * 100).toFixed(2)
                           : '100.00'
                         }%
                       </span>
@@ -523,148 +381,3 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
   )
 }
 
-// ============================================================================
-// LP Token Selector — auto-fetch from wallet + manual paste fallback
-// ============================================================================
-
-interface LPTokenSelectorProps {
-  lpTokens: ParsedLPToken[]
-  selectedLPIndex: number
-  isFetchingLP: boolean
-  lpFetchError: string | null
-  showManualPaste: boolean
-  lpTokenRecord: string
-  onSelect: (idx: number) => void
-  onManualChange: (value: string) => void
-  onToggleManual: () => void
-  onRefresh: () => void
-  tokenSymbol: string
-}
-
-function LPTokenSelector({
-  lpTokens,
-  selectedLPIndex,
-  isFetchingLP,
-  lpFetchError,
-  showManualPaste,
-  lpTokenRecord,
-  onSelect,
-  onManualChange,
-  onToggleManual,
-  onRefresh,
-  tokenSymbol,
-}: LPTokenSelectorProps) {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <label className="text-sm text-surface-400">LP Token Record</label>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onRefresh}
-            disabled={isFetchingLP}
-            className="flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={cn('w-3 h-3', isFetchingLP && 'animate-spin')} />
-            {isFetchingLP ? 'Fetching...' : 'Refresh'}
-          </button>
-          <button
-            onClick={onToggleManual}
-            className="flex items-center gap-1 text-xs text-surface-500 hover:text-surface-300 transition-colors"
-          >
-            <Edit3 className="w-3 h-3" />
-            {showManualPaste ? 'Auto' : 'Paste'}
-          </button>
-        </div>
-      </div>
-
-      {showManualPaste ? (
-        /* Manual paste fallback */
-        <div>
-          <textarea
-            value={lpTokenRecord}
-            onChange={(e) => onManualChange(e.target.value)}
-            placeholder="Paste your LPToken record plaintext here..."
-            className="input-field w-full h-24 resize-none text-sm font-mono"
-          />
-          <p className="text-xs text-surface-500 mt-1">
-            Paste the record from your wallet or block explorer.
-          </p>
-        </div>
-      ) : isFetchingLP ? (
-        /* Loading state */
-        <div className="flex items-center justify-center gap-2 p-6 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-          <Loader2 className="w-4 h-4 animate-spin text-brand-400" />
-          <span className="text-sm text-surface-400">Fetching LP tokens from wallet...</span>
-        </div>
-      ) : lpFetchError ? (
-        /* Error state */
-        <div className="p-4 rounded-xl bg-no-500/10 border border-no-500/20">
-          <div className="flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-no-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm text-no-400">{lpFetchError}</p>
-              <button
-                onClick={onToggleManual}
-                className="text-xs text-surface-400 hover:text-surface-300 mt-1 underline"
-              >
-                Paste record manually instead
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : lpTokens.length === 0 ? (
-        /* No records found */
-        <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] text-center">
-          <p className="text-sm text-surface-400 mb-2">No LP tokens found for this market</p>
-          <p className="text-xs text-surface-500 mb-3">
-            LP tokens are created when you add liquidity or create a market.
-          </p>
-          <button
-            onClick={onToggleManual}
-            className="text-xs text-brand-400 hover:text-brand-300 underline"
-          >
-            Paste record manually
-          </button>
-        </div>
-      ) : (
-        /* LP Token list */
-        <div className="space-y-2">
-          {lpTokens.map((lp, idx) => (
-            <button
-              key={idx}
-              onClick={() => onSelect(idx)}
-              className={cn(
-                'w-full text-left p-3 rounded-xl border transition-all',
-                selectedLPIndex === idx
-                  ? 'bg-brand-500/10 border-brand-500/30'
-                  : 'bg-white/[0.03] border-white/[0.06] hover:border-surface-600'
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Droplets className="w-4 h-4 text-accent-400" />
-                  <span className="text-sm font-semibold text-white">
-                    {formatCredits(lp.lpShares)} LP shares
-                  </span>
-                </div>
-                <span className="text-xs text-surface-500 font-mono">
-                  {tokenSymbol}
-                </span>
-              </div>
-              {lp.marketId && (
-                <p className="text-[10px] text-surface-500 font-mono mt-1 truncate">
-                  Market: {lp.marketId.slice(0, 20)}...
-                </p>
-              )}
-            </button>
-          ))}
-          {lpTokens.length > 0 && (
-            <p className="text-xs text-surface-500 text-center">
-              {lpTokens.length} LP token{lpTokens.length > 1 ? 's' : ''} found
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}

@@ -1,7 +1,6 @@
 export { Header } from './Header'
 export { DashboardHeader } from './DashboardHeader'
 export { Hero } from './Hero'
-export { MarketsSection } from './MarketsSection'
 export { MarketCard } from './MarketCard'
 export { MarketRow } from './MarketRow'
 export { BettingModal } from './BettingModal'

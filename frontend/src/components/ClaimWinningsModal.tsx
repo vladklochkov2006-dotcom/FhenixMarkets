@@ -3,12 +3,9 @@ import {
   X,
   Trophy,
   Shield,
-  Copy,
   Check,
   RefreshCcw,
-  Terminal,
   AlertTriangle,
-  ExternalLink,
   Loader2,
   Wallet,
   Search,
@@ -16,11 +13,26 @@ import {
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
 import { type Bet, useBetsStore, useWalletStore, outcomeToIndex } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
 import { cn, formatCredits, getTokenSymbol } from '@/lib/utils'
-import { diagnoseTransaction, getMarketCredits, getRedeemFunction, getRefundFunction, getProgramIdForToken } from '@/lib/aleo-client'
-import { fetchOutcomeShareRecords, type ParsedOutcomeShare } from '@/lib/credits-record'
+import { redeemShares as contractRedeem, claimRefund as contractClaimRefund, parseContractError, ensureSepoliaNetwork } from '@/lib/contracts'
 import { TransactionLink } from './TransactionLink'
+
+// Local stubs — on Ethereum, share balances are tracked in the contract (no Aleo records)
+interface ParsedOutcomeShare {
+  marketId: string | null
+  owner: string | null
+  outcome: number
+  quantity: bigint
+  plaintext: string
+}
+
+async function fetchOutcomeShareRecords(_programId: string, _marketId: string): Promise<ParsedOutcomeShare[]> {
+  return [] // On Ethereum, shares are contract state, not private records
+}
+
+function getProgramIdForToken(_tokenType: string = 'ETH'): string {
+  return '' // Not applicable on Ethereum
+}
 
 interface ClaimWinningsModalProps {
   mode: 'winnings' | 'refund'
@@ -38,18 +50,10 @@ interface InspectedOutcomeShareInput {
   quantity: bigint | null
 }
 
-function inspectOutcomeShareInput(text: string): InspectedOutcomeShareInput {
-  const outcomeMatch = text.match(/outcome:\s*(\d+)u8/)
-  const qtyMatch = text.match(/quantity:\s*(\d+)u128/)
-  const marketMatch = text.match(/market_id:\s*(\d+field)/)
-  const ownerMatch = text.match(/owner:\s*(aleo1[a-z0-9]+)/)
-
-  return {
-    marketId: marketMatch ? marketMatch[1] : null,
-    owner: ownerMatch ? ownerMatch[1] : null,
-    outcome: outcomeMatch ? parseInt(outcomeMatch[1]) : null,
-    quantity: qtyMatch ? BigInt(qtyMatch[1]) : null,
-  }
+function inspectOutcomeShareInput(_text: string): InspectedOutcomeShareInput {
+  // On Ethereum/Fhenix, share balances are encrypted in the contract.
+  // No client-side record parsing needed — claims go directly to the contract.
+  return { marketId: null, owner: null, outcome: null, quantity: null }
 }
 
 export function ClaimWinningsModal({
@@ -60,15 +64,13 @@ export function ClaimWinningsModal({
   market,
   onClaimSuccess
 }: ClaimWinningsModalProps) {
-  const [copiedCommand, setCopiedCommand] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [txId, setTxId] = useState<string | null>(null)
   const [txPhase, setTxPhase] = useState<'idle' | 'pending' | 'confirmed'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [showCli, setShowCli] = useState(false)
   const { markBetClaimed } = useBetsStore()
   const { wallet } = useWalletStore()
-  const { executeTransaction, pollTransactionStatus } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   // Record fetching state
   const [shareRecords, setShareRecords] = useState<ParsedOutcomeShare[]>([])
@@ -109,8 +111,7 @@ export function ClaimWinningsModal({
     setIsFetchingRecords(true)
     setFetchError(null)
     try {
-      const betTokenType = (bet.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-      const records = await fetchOutcomeShareRecords(getProgramIdForToken(betTokenType), bet.marketId)
+      const records = await fetchOutcomeShareRecords(getProgramIdForToken('ETH'), bet.marketId)
       const matchingRecords = sortRecordsForBet(records.filter(matchesCurrentBet))
 
       setShareRecords(matchingRecords)
@@ -152,11 +153,9 @@ export function ClaimWinningsModal({
   }, [isOpen, bet, wallet.connected, fetchRecords])
 
   const handleClose = () => {
-    setCopiedCommand(null)
     setError(null)
     setTxId(null)
     setTxPhase('idle')
-    setShowCli(false)
     onClose()
   }
 
@@ -166,23 +165,6 @@ export function ClaimWinningsModal({
       onClaimSuccess?.()
     }
     handleClose()
-  }
-
-  const copyToClipboard = async (text: string, id: string) => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopiedCommand(id)
-      setTimeout(() => setCopiedCommand(null), 2000)
-    } catch {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      setCopiedCommand(id)
-      setTimeout(() => setCopiedCommand(null), 2000)
-    }
   }
 
   // Get the record plaintext to use for the transaction
@@ -205,11 +187,11 @@ export function ClaimWinningsModal({
     setIsSubmitting(true)
     setError(null)
     try {
-      const publicFeeRequired = 1_500_000n
+      const publicFeeRequired = 1_500_000_000_000_000n // ~0.0015 ETH for gas
       if (!wallet.isDemoMode && wallet.balance.public < publicFeeRequired) {
         throw new Error(
-          `Insufficient public ETH for transaction fee. ${isRefund ? 'claim_refund' : 'redeem_shares'} needs 1.50 public ETH for gas, ` +
-          `but only ${Number(wallet.balance.public) / 1_000_000} ETH is public in your wallet.`
+          `Insufficient ETH for gas. ${isRefund ? 'claim_refund' : 'redeem_shares'} needs ~0.0015 ETH for gas, ` +
+          `but only ${(Number(wallet.balance.public) / 1e18).toFixed(4)} ETH in your wallet.`
         )
       }
 
@@ -227,101 +209,30 @@ export function ClaimWinningsModal({
         )
       }
 
-      const tokenType = (bet.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-      if (inspectedRecord.quantity != null) {
-        try {
-          const remainingCollateral = await getMarketCredits(bet.marketId, getProgramIdForToken(tokenType))
-          if (remainingCollateral !== null && remainingCollateral < inspectedRecord.quantity) {
-            throw new Error(
-              `This market only has ${formatCredits(remainingCollateral)} ${tokenType} remaining on-chain, ` +
-              `but this share record needs ${formatCredits(inspectedRecord.quantity)} ${tokenType}. ` +
-              `Redemption will be rejected until enough collateral remains.`
-            )
-          }
-        } catch (collateralErr) {
-          if (collateralErr instanceof Error && collateralErr.message.includes('remaining on-chain')) {
-            throw collateralErr
-          }
-        }
-      }
+      await ensureSepoliaNetwork()
 
-      const functionName = isRefund
-        ? getRefundFunction(tokenType)
-        : getRedeemFunction(tokenType)
+      // Determine shares amount from the inspected record or bet data
+      const sharesToClaim = inspectedRecord?.quantity || bet.sharesReceived || 0n
 
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs: [recordPlaintext],
-        fee: 1.5,
-        recordIndices: [0],
-      })
-
-      if (result?.transactionId) {
-        const submittedTxId = result.transactionId
-        setTxId(submittedTxId)
-        setTxPhase('pending')
-
-        const onChainVerify = submittedTxId.startsWith('at1')
-          ? async () => {
-              const diagnosis = await diagnoseTransaction(submittedTxId)
-              return diagnosis.status === 'accepted'
-            }
-          : undefined
-
-        void pollTransactionStatus(
-          submittedTxId,
-          async (status, onChainTxId) => {
-            const finalTxId = onChainTxId || submittedTxId
-            if (onChainTxId) {
-              setTxId(onChainTxId)
-            }
-
-            if (status === 'confirmed') {
-              setTxPhase('confirmed')
-              markBetClaimed(bet.id)
-              onClaimSuccess?.()
-              return
-            }
-
-            setTxPhase('idle')
-            setTxId(null)
-
-            if (status === 'failed') {
-              let message = `${isRefund ? 'Refund' : 'Redemption'} failed. Your portfolio was not marked as claimed.`
-              try {
-                if (finalTxId.startsWith('at1')) {
-                  const diagnosis = await diagnoseTransaction(finalTxId)
-                  const suffix = diagnosis.message ? ` ${diagnosis.message}` : ''
-                  if (diagnosis.status === 'rejected') {
-                    message = `Transaction was rejected on-chain.${suffix} Your portfolio was not marked as claimed.`
-                  } else if (diagnosis.status === 'accepted') {
-                    message = `Transaction was accepted on-chain, but wallet status reported a failure. Please refresh and verify your claim manually.`
-                  }
-                }
-              } catch {
-                // keep fallback message
-              }
-              setError(message)
-              return
-            }
-
-            setError(
-              `Transaction was submitted, but final confirmation could not be verified yet. ` +
-              `Your portfolio was not marked as claimed. ` +
-              `Check the explorer or reopen this modal later to verify the result.`
-            )
-          },
-          30,
-          10_000,
-          onChainVerify,
-        )
+      let receipt
+      if (isRefund) {
+        // claimRefund(marketId, outcome, shares)
+        const outcomeIndex = inspectedRecord?.outcome ?? outcomeToIndex(bet.outcome)
+        receipt = await contractClaimRefund(bet.marketId, outcomeIndex, sharesToClaim)
       } else {
-        throw new Error('No transaction ID returned from wallet')
+        // redeemShares(marketId, sharesToRedeem)
+        receipt = await contractRedeem(bet.marketId, sharesToClaim)
       }
+
+      setTxId(receipt.hash)
+      setTxPhase('confirmed')
+      markBetClaimed(bet.id)
+      onClaimSuccess?.()
+
+      // No polling needed — tx.wait() in contracts.ts already confirmed
     } catch (err: unknown) {
       console.error(`${isRefund ? 'Claim refund' : 'Redeem shares'} failed:`, err)
-      const msg = err instanceof Error ? err.message : 'Transaction failed'
+      const msg = err instanceof Error ? parseContractError(err) : 'Transaction failed'
       setError(msg)
     } finally {
       setIsSubmitting(false)
@@ -330,11 +241,7 @@ export function ClaimWinningsModal({
 
   if (!bet) return null
 
-  const tokenType = bet.tokenType || 'ETH'
-  const tokenSymbol = getTokenSymbol(tokenType)
-  const refundFn = getRefundFunction(tokenType)
-  const redeemFn = getRedeemFunction(tokenType)
-
+  const tokenSymbol = getTokenSymbol('ETH')
   // FPMM: winning shares redeem 1:1, payout = quantity from OutcomeShare record (most accurate)
   // Fallback chain: selected record quantity > bet.sharesReceived > bet.amount
   const recordQuantity = selectedRecord?.quantity
@@ -351,20 +258,6 @@ export function ClaimWinningsModal({
   const hasRecord = !!getRecordPlaintext()
   const canMarkClaimedManually = fetchError === 'No OutcomeShare records found. Your wallet may not support record fetching, or records may be spent.'
   const hasRecordMismatch = !!fetchError && fetchError.includes('different outcome or trade')
-
-  // CLI commands as fallback
-  const claimProgramId = getProgramIdForToken(tokenType as 'ETH' | 'USDCX' | 'USAD')
-  const claimRefundCmd = `snarkos developer execute ${claimProgramId} ${refundFn} \\
-  "<YOUR_OUTCOME_SHARE_RECORD>" \\
-  --private-key <YOUR_PRIVATE_KEY> \\
-  --endpoint https://api.explorer.provable.com \\
-  --broadcast --network 1 --priority-fee 500000`
-
-  const redeemSharesCmd = `snarkos developer execute ${claimProgramId} ${redeemFn} \\
-  "<YOUR_OUTCOME_SHARE_RECORD>" \\
-  --private-key <YOUR_PRIVATE_KEY> \\
-  --endpoint https://api.explorer.provable.com \\
-  --broadcast --network 1 --priority-fee 500000`
 
   return (
     <AnimatePresence>

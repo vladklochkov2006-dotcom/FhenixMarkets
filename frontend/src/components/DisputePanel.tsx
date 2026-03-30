@@ -1,20 +1,31 @@
 import { motion } from 'framer-motion'
 import { ShieldAlert, Clock, AlertTriangle, Loader2, Check } from 'lucide-react'
 import { useState, useMemo, useEffect } from 'react'
-import { type Market, useWalletStore } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
+import { type Market } from '@/lib/store'
 import { cn, formatCredits } from '@/lib/utils'
-import {
-  buildDisputeResolutionInputs,
-  type MarketResolutionData,
-  getCurrentBlockHeight,
-  MIN_DISPUTE_BOND,
-  CHALLENGE_WINDOW_BLOCKS,
-  getProgramIdForToken,
-} from '@/lib/aleo-client'
+import { disputeResolution as contractDispute, parseContractError, ensureSepoliaNetwork } from '@/lib/contracts'
+import { ethers } from 'ethers'
 import { TransactionLink } from './TransactionLink'
-import { config } from '@/lib/config'
+// config import removed — deadlines use timestamps on Ethereum
 import { devWarn } from '../lib/logger'
+
+// Local constants (migrated from aleo-client)
+const CHALLENGE_WINDOW_BLOCKS = 2880n // ~12 hours
+const MIN_DISPUTE_BOND = 1000000n     // 1 token
+
+// getCurrentBlockHeight — on Ethereum, use provider to get latest block
+async function getCurrentBlockHeight(): Promise<bigint> {
+  try {
+    const provider = new ethers.BrowserProvider((window as any).ethereum)
+    const blockNumber = await provider.getBlockNumber()
+    return BigInt(blockNumber)
+  } catch {
+    return 0n
+  }
+}
+
+// Re-export for compatibility
+type MarketResolutionData = any
 
 interface DisputePanelProps {
   market: Market
@@ -22,8 +33,7 @@ interface DisputePanelProps {
 }
 
 export function DisputePanel({ market, resolution }: DisputePanelProps) {
-  const { wallet } = useWalletStore()
-  const { executeTransaction } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const [proposedOutcome, setProposedOutcome] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -69,7 +79,7 @@ export function DisputePanel({ market, resolution }: DisputePanelProps) {
       return
     }
 
-    const secondsRemaining = blocksRemaining * config.secondsPerBlock
+    const secondsRemaining = blocksRemaining // deadlines are timestamps (seconds)
     const hours = Math.floor(secondsRemaining / 3600)
     const minutes = Math.floor((secondsRemaining % 3600) / 60)
 
@@ -108,39 +118,17 @@ export function DisputePanel({ market, resolution }: DisputePanelProps) {
     setError(null)
 
     try {
-      // Dispute bond is always in ETH regardless of market token type
-      const ethBalance = wallet.balance.public
+      await ensureSepoliaNetwork()
 
-      if (ethBalance < MIN_DISPUTE_BOND + 700_000n) {
-        throw new Error(
-          `Insufficient ETH balance. You need at least ${formatCredits(MIN_DISPUTE_BOND)} ETH ` +
-          'as a dispute bond plus gas fees.'
-        )
-      }
+      // Dispute bond = 3x total bonded (from contract). Use a reasonable default.
+      // The contract will revert if insufficient.
+      const disputeBondWei = ethers.parseEther('0.003') // 3x min bond
 
-      // Dispute bond is always in ETH regardless of market token type
-      const { functionName, inputs } = buildDisputeResolutionInputs(
-        market.id,
-        proposedOutcome,
-      )
-
-      const tokenType: 'ETH' | 'USDCX' | 'USAD' = market.tokenType === 'USDCX' ? 'USDCX'
-        : market.tokenType === 'USAD' ? 'USAD' : 'ETH'
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs,
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      const receipt = await contractDispute(market.id, proposedOutcome, disputeBondWei)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to file dispute:', err)
-      setError(err instanceof Error ? err.message : 'Failed to file dispute')
+      setError(err instanceof Error ? parseContractError(err) : 'Failed to file dispute')
     } finally {
       setIsSubmitting(false)
     }
@@ -202,7 +190,7 @@ export function DisputePanel({ market, resolution }: DisputePanelProps) {
                 </span>
               </div>
               <p className="text-xs text-surface-400 mt-1">
-                ~{(Number(CHALLENGE_WINDOW_BLOCKS) * config.secondsPerBlock / 3600).toFixed(1)} hours from resolution.
+                ~{(Number(CHALLENGE_WINDOW_BLOCKS) / 3600).toFixed(1)} hours from resolution.
                 Block {resolution.challenge_deadline.toString()}.
               </p>
             </div>

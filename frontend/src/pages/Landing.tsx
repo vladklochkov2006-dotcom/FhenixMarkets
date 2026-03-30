@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { Shield, Eye, Lock, ArrowRight, Wallet, Zap, ChevronRight, BarChart3, Users, Globe, Code, Sparkles, Target, Clock, ArrowUpRight, TrendingUp, LayoutDashboard } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useWalletStore, type Market } from '@/lib/store'
 import { useRealMarketsStore } from '@/lib/market-store'
 import { formatCredits, formatPercentage, getCategoryName, getCategoryEmoji, getCategoryColor } from '@/lib/utils'
@@ -615,6 +615,34 @@ const fadeUp = {
 // ═══════════════════════════════════════════
 export function Landing() {
   const navigate = useNavigate()
+  const { wallet } = useWalletStore()
+
+  // Track whether user explicitly clicked a login/launch button
+  const userInitiatedLogin = useRef(false)
+
+  // After fresh Privy login → navigate to dashboard ONLY if user clicked login
+  useEffect(() => {
+    const handler = () => {
+      if (userInitiatedLogin.current) {
+        userInitiatedLogin.current = false
+        navigate('/dashboard')
+      }
+    }
+    window.addEventListener('privy:connected', handler)
+    return () => window.removeEventListener('privy:connected', handler)
+  }, [navigate])
+
+  const handleLaunch = useCallback(() => {
+    if (wallet.connected) {
+      // Already logged in — go straight to dashboard
+      navigate('/dashboard')
+    } else {
+      // Mark as user-initiated, then trigger Privy login modal
+      userInitiatedLogin.current = true
+      const privyLogin = (window as any).__privyLogin
+      if (privyLogin) privyLogin()
+    }
+  }, [navigate, wallet.connected])
 
   return (
     <div className="min-h-screen bg-surface-950 relative overflow-hidden">
@@ -673,7 +701,7 @@ export function Landing() {
               <a href="#protocol" className="px-4 py-2 text-sm font-medium text-surface-400 hover:text-white rounded-lg hover:bg-white/[0.04] transition-all duration-200">How It Works</a>
               <a href="#demo" className="px-4 py-2 text-sm font-medium text-surface-400 hover:text-white rounded-lg hover:bg-white/[0.04] transition-all duration-200">Demo</a>
             </nav>
-            <button onClick={() => navigate('/dashboard')}
+            <button onClick={handleLaunch}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm active:scale-[0.96] transition-all duration-200"
                 style={{
                   background: 'linear-gradient(135deg, #0AD9DC 0%, #09c2c5 100%)',
@@ -713,7 +741,7 @@ export function Landing() {
               </motion.p>
 
               <motion.div variants={fadeUp} className="flex items-center gap-4 mb-8">
-                <button onClick={() => navigate('/dashboard')}
+                <button onClick={handleLaunch}
                     className="flex items-center gap-3 px-7 py-3.5 rounded-xl font-semibold text-sm active:scale-[0.96] transition-all duration-200 group"
                     style={{
                       background: 'linear-gradient(135deg, #0AD9DC 0%, #09c2c5 100%)',
@@ -898,7 +926,7 @@ export function Landing() {
               First prediction market where data stays in ciphertext end-to-end. Built on Fhenix CoFHE.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <button onClick={() => navigate('/dashboard')}
+              <button onClick={handleLaunch}
                 className="flex items-center gap-3 px-8 py-4 rounded-xl font-semibold text-base active:scale-[0.96] transition-all duration-200 group"
                 style={{
                   background: 'linear-gradient(135deg, #0AD9DC 0%, #09c2c5 100%)',

@@ -14,13 +14,14 @@ import {
   Loader2,
 } from 'lucide-react'
 import { useState } from 'react'
-import { useWallet } from '@provablehq/aleo-wallet-adaptor-react'
+import { usePrivyWallet as useWallet } from '@/hooks/usePrivyWallet'
 import { useWalletStore } from '@/lib/store'
+import { getWalletDisplayInfo } from '@/lib/wallet'
 import { DashboardHeader } from '@/components/DashboardHeader'
 import { Footer } from '@/components/Footer'
-import { WalletCompatibilityLab } from '@/components/WalletCompatibilityLab'
 import { cn, formatCredits } from '@/lib/utils'
-import { clearAllStaleData } from '@/lib/aleo-client'
+// Stub: Aleo-specific stale data clearing not needed on Ethereum
+const clearAllStaleData = async () => 'No stale data to clear (Ethereum mode).'
 
 function getSetting(key: string, fallback: string): string {
   try { return localStorage.getItem(key) || fallback } catch { return fallback }
@@ -169,11 +170,11 @@ export function Settings() {
                   <div>
                     <p className="text-sm text-surface-400 mb-1">Wallet Type</p>
                     <p className="text-white capitalize">
-                      {wallet.walletType} {wallet.isDemoMode && '(Demo Mode)'}
+                      {(() => { const info = getWalletDisplayInfo(wallet.walletType); return `${info.icon} ${info.name}`; })()}{wallet.isDemoMode && ' (Demo Mode)'}
                     </p>
                   </div>
                   <a
-                    href={`https://testnet.explorer.provable.com/address/${wallet.address}`}
+                    href={`https://etherscan.io/address/${wallet.address}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-2 text-brand-400 hover:text-brand-300 text-sm"
@@ -344,14 +345,6 @@ export function Settings() {
               </div>
             </motion.div>
 
-            {/* Wallet A/B Lab */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.6 }}
-            >
-              <WalletCompatibilityLab />
-            </motion.div>
           </div>
         </div>
       </main>

@@ -100,7 +100,7 @@ function getMarketReserves(market: Market | undefined): AMMReserves | null {
 }
 
 function formatShareQuantity(quantity: bigint): string {
-  const value = Number(quantity) / 1_000_000
+  const value = Number(quantity) / 1e18
   return value.toLocaleString(undefined, {
     minimumFractionDigits: value >= 100 || Number.isInteger(value) ? 0 : 2,
     maximumFractionDigits: 4,
@@ -109,15 +109,15 @@ function formatShareQuantity(quantity: bigint): string {
 
 function getOpenPositionMetrics(bet: Bet, market: Market | undefined) {
   const shares = bet.sharesReceived || bet.amount
-  const sharesRaw = Number(shares) / 1_000_000
-  const amountRaw = Number(bet.amount) / 1_000_000
+  const sharesRaw = Number(shares) / 1e18
+  const amountRaw = Number(bet.amount) / 1e18
   const avgPrice = sharesRaw > 0 ? amountRaw / sharesRaw : 0
   const outcomeIdx = outcomeToIndex(bet.outcome)
   const currentPrice = getOutcomeCurrentPrice(market, outcomeIdx) ?? avgPrice
   const reserves = getMarketReserves(market)
   const quotedValueMicro = reserves ? calculateSellTokensOut(reserves, outcomeIdx, shares) : 0n
   const currentValue = quotedValueMicro > 0n
-    ? Number(quotedValueMicro) / 1_000_000
+    ? Number(quotedValueMicro) / 1e18
     : sharesRaw * currentPrice
   const exitPrice = sharesRaw > 0 ? currentValue / sharesRaw : currentPrice
   const pnlAmount = currentValue - amountRaw
@@ -210,9 +210,9 @@ export function MyBets() {
     const sorted = [...allBets].sort((a, b) => a.placedAt - b.placedAt)
     let cumValue = 0
     return sorted.map((bet) => {
-      const amount = Number(bet.amount) / 1_000_000
+      const amount = Number(bet.amount) / 1e18
       if (bet.status === 'won') {
-        cumValue += Number(bet.sharesReceived || bet.amount) / 1_000_000 - amount
+        cumValue += Number(bet.sharesReceived || bet.amount) / 1e18 - amount
       } else if (bet.status === 'lost') {
         cumValue -= amount
       } else if (bet.status === 'active') {
@@ -331,13 +331,13 @@ export function MyBets() {
       return
     }
 
-    const amountMicro = BigInt(Math.floor(amountNum * 1_000_000))
+    const amountWei = BigInt(Math.floor(amountNum * 1e18))
     const market = markets.find(m => m.id === importMarketId)
 
     addPendingBet({
       id: txId,
       marketId: importMarketId,
-      amount: amountMicro,
+      amount: amountWei,
       outcome: importOutcome,
       placedAt: Date.now(),
       status: 'active',
@@ -429,14 +429,14 @@ export function MyBets() {
                 return sum + getOpenPositionMetrics(b, market).currentValue
               }, 0)
               const wonBets = userBets.filter(b => b.status === 'won')
-              const totalWon = wonBets.reduce((sum, b) => sum + Number(b.sharesReceived || b.amount), 0) / 1_000_000
-              const totalStaked = wonBets.reduce((sum, b) => sum + Number(b.amount), 0) / 1_000_000
+              const totalWon = wonBets.reduce((sum, b) => sum + Number(b.sharesReceived || b.amount), 0) / 1e18
+              const totalStaked = wonBets.reduce((sum, b) => sum + Number(b.amount), 0) / 1e18
               const pnl = totalWon - totalStaked
               const lostBets = userBets.filter(b => b.status === 'lost')
-              const totalLost = lostBets.reduce((sum, b) => sum + Number(b.amount), 0) / 1_000_000
+              const totalLost = lostBets.reduce((sum, b) => sum + Number(b.amount), 0) / 1e18
               const netPnl = pnl - totalLost
               const claimable = userBets.filter(b => (b.status === 'won' || b.status === 'refunded') && !b.claimed)
-              const claimableVal = claimable.reduce((sum, b) => sum + Number(b.sharesReceived || b.amount), 0) / 1_000_000
+              const claimableVal = claimable.reduce((sum, b) => sum + Number(b.sharesReceived || b.amount), 0) / 1e18
 
               return [
                 { label: 'Portfolio Value', value: `${portfolioVal.toFixed(2)} ETH`, icon: DollarSign, color: 'text-white', sub: `${activeBets.length} active positions` },
@@ -1005,7 +1005,7 @@ function BetCard({
   showClaimAction,
 }: {
   bet: Bet
-  market?: { question: string; tokenType?: 'ETH' | 'USDCX' | 'USAD'; numOutcomes?: number; outcomeLabels?: string[] }
+  market?: { question: string; tokenType?: 'ETH'; numOutcomes?: number; outcomeLabels?: string[] }
   index: number
   onClaim: (mode: 'winnings' | 'refund') => void
   onRestoreClaim: () => void
@@ -1213,7 +1213,7 @@ function BetCard({
 
           {bet.id.startsWith('at1') ? (
             <a
-              href={`https://testnet.explorer.provable.com/transaction/${bet.id}`}
+              href={`https://sepolia.etherscan.io/tx/${bet.id}`}
               target="_blank"
               rel="noopener noreferrer"
               className="p-1.5 rounded-lg hover:bg-white/[0.03] transition-colors"

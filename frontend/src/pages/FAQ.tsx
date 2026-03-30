@@ -40,7 +40,7 @@ const faqs: FAQItem[] = [
   {
     category: 'Trading',
     question: 'What tokens can I use?',
-    answer: 'Markets support three token types, each with its own market contract: ETH (native ETH via FhenixMarkets.sol), USDCX (test stablecoin via FhenixMarketsUSDCX.sol), and USAD (stablecoin via FhenixMarketsUSAD.sol). Each market is denominated in one specific token. ETH markets use encrypted ERC-20 balances, while USDCX and USAD markets use ERC-20 tokens with FHE encryption for private trading.',
+    answer: 'Markets are denominated in ETH (native Fhenix network token) via FhenixMarkets.sol. Your bets and balances are encrypted on-chain using Fully Homomorphic Encryption for private trading.',
   },
   {
     category: 'Trading',

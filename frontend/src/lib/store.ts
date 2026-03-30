@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware'
 import {
   walletManager,
   fetchPublicBalance,
-  fetchUsdcxPublicBalance,
+
   lookupWalletTransactionStatus,
   type WalletType,
   type NetworkType,
@@ -11,13 +11,10 @@ import {
   type WalletBalance,
 } from './wallet'
 import {
-  buildBuySharesInputs,
-  CONTRACT_INFO,
-  diagnoseTransaction,
-  getMarket,
-  getMarketResolution,
-  getProgramIdForToken,
-} from './aleo-client'
+  FHENIX_MARKETS_ADDRESS,
+  fetchMarket as fetchMarketFromChain,
+  fetchVoteTally,
+} from './contracts'
 import { config } from './config'
 import { devLog, devWarn } from './logger'
 import {
@@ -27,8 +24,54 @@ import {
   fetchCommitments as sbFetchCommitments, upsertCommitments as sbUpsertCommitments,
 } from './supabase'
 
-// Re-export for use in components
-export { CONTRACT_INFO } from './aleo-client'
+// ============================================================================
+// Stubs for removed Aleo-specific functions (replaced by EVM contracts.ts)
+// ============================================================================
+
+/** Legacy CONTRACT_INFO stub — provides programId for code that still references it */
+export const CONTRACT_INFO = {
+  programId: FHENIX_MARKETS_ADDRESS,
+  network: 'sepolia',
+  explorerUrl: 'https://sepolia.etherscan.io',
+  useMockData: false,
+}
+
+/** Stub: Aleo program IDs are not applicable on EVM; returns the markets contract address */
+function getProgramIdForToken(_token: string): string {
+  return FHENIX_MARKETS_ADDRESS
+}
+
+/** Stub: Aleo transaction diagnosis not applicable on EVM */
+async function diagnoseTransaction(_txId: string): Promise<{ status: string; error?: string }> {
+  return { status: 'unknown', error: 'Aleo transaction diagnosis not available on EVM' }
+}
+
+/** Stub: Aleo-specific input builder not applicable on EVM */
+function buildBuySharesInputs(
+  _marketId: string,
+  _outcomeNum: number,
+  _amount: bigint,
+  _expectedShares: bigint,
+  _minSharesOut: bigint,
+  _tokenType: string,
+  _creditsRecord?: string,
+): { functionName: string; inputs: string[] } {
+  return { functionName: 'buyShares', inputs: [] }
+}
+
+/** Read market data from the on-chain contract (EVM replacement for Aleo getMarket) */
+async function getMarket(marketId: string): Promise<{ status: number } | null> {
+  const data = await fetchMarketFromChain(marketId)
+  if (!data) return null
+  return { status: data.status }
+}
+
+/** Read market resolution from the on-chain contract (EVM replacement for Aleo getMarketResolution) */
+async function getMarketResolution(marketId: string): Promise<{ winning_outcome: number } | null> {
+  const tally = await fetchVoteTally(marketId)
+  if (!tally || !tally.finalized) return null
+  return { winning_outcome: tally.winningOutcome }
+}
 
 // ============================================================================
 // Types
@@ -84,7 +127,7 @@ export interface Market {
   resolutionSource?: string
   tags?: string[]
   transactionId?: string
-  tokenType?: 'ETH' | 'USDCX' | 'USAD'
+  tokenType?: 'ETH'
   thumbnailUrl?: string
 }
 
@@ -116,7 +159,7 @@ export interface Bet {
   payoutAmount?: bigint        // Calculated payout when market resolves (won bets)
   winningOutcome?: string      // From resolution data
   claimed?: boolean            // Whether user has claimed winnings/refund
-  tokenType?: 'ETH' | 'USDCX' | 'USAD' // v12: token denomination
+  tokenType?: 'ETH' // v12: token denomination
 }
 
 /** Convert 1-indexed outcome number to string key */
@@ -154,6 +197,7 @@ export interface CommitmentRecord {
 export interface WalletState {
   connected: boolean
   connecting: boolean
+  privyReady: boolean
   address: string | null
   network: NetworkType
   balance: WalletBalance
@@ -174,7 +218,7 @@ interface WalletStore {
   connect: (walletType: WalletType) => Promise<void>
   disconnect: () => Promise<void>
   refreshBalance: () => Promise<void>
-  shieldCredits: (amount: bigint) => Promise<string>
+  // shieldCredits removed — Aleo-specific
   testTransaction: () => Promise<string>
   clearError: () => void
 }
@@ -182,9 +226,10 @@ interface WalletStore {
 const initialWalletState: WalletState = {
   connected: false,
   connecting: false,
+  privyReady: false,
   address: null,
   network: 'testnet',
-  balance: { public: 0n, private: 0n, usdcxPublic: 0n, usdcxPrivate: 0n, usadPublic: 0n, usadPrivate: 0n },
+  balance: { public: 0n, private: 0n },
   walletType: null,
   isDemoMode: false,
   encryptionKey: null,
@@ -211,6 +256,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
         wallet: {
           connected: true,
           connecting: false,
+          privyReady: true,
           address: account.address,
           network: account.network,
           balance,
@@ -302,312 +348,13 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
     }
 
     try {
-      // Fetch public balance directly from Fhenix RPC
+      // Fetch ETH balance via Privy provider (ethers.js)
       const publicBalance = await fetchPublicBalance(wallet.address)
+      devLog('[Balance] ETH balance:', publicBalance.toString(), 'wei')
 
-      // Try to get private balance from credits records
-      let privateBalance = 0n
-
-      // Helper: parse microFHE from various record text formats
-      const parseMicroFHE = (text: string): bigint => {
-        // Try patterns: microFHE: 1000000u64, "microFHE": "1000000u64", microFHE: 1000000
-        const patterns = [
-          /microFHE["\s:]+(\d+)u64/,
-          /microFHE["\s:]+(\d+)/,
-          /"microFHE"\s*:\s*"?(\d+)/,
-        ]
-        for (const pattern of patterns) {
-          const match = text.match(pattern)
-          if (match) return BigInt(match[1])
-        }
-        return 0n
-      }
-
-      // Helper: check if record is spent
-      const isRecordSpent = (record: any): boolean => {
-        if (typeof record === 'object' && record !== null) {
-          if (record.spent === true || record.is_spent === true) return true
-          if (record.spent === 'true' || record.is_spent === 'true') return true
-        }
-        return false
-      }
-
-      // Determine connected wallet type for prioritized detection
-      const connectedType = wallet.walletType
-      devLog('[Balance] Connected wallet type:', connectedType)
-
-      // Helper: extract private balance from records array
-      const sumRecordsBalance = (records: any[], label: string): bigint => {
-        let sum = 0n
-        const recordsArr = Array.isArray(records) ? records : ((records as any)?.records || [])
-        if (recordsArr.length === 0) {
-          devLog(`[Balance] ${label}: 0 records returned`)
-          return 0n
-        }
-        let spentCount = 0
-        let unspentCount = 0
-        for (let i = 0; i < recordsArr.length; i++) {
-          const record = recordsArr[i]
-          if (isRecordSpent(record)) {
-            spentCount++
-            continue
-          }
-          unspentCount++
-          const text = typeof record === 'string'
-            ? record
-            : ((record as any)?.plaintext || (record as any)?.data || JSON.stringify(record))
-          const mc = parseMicroFHE(String(text))
-          sum += mc
-        }
-        devLog(`[Balance] ${label}: ${recordsArr.length} records (${unspentCount} unspent, ${spentCount} spent) = ${Number(sum) / 1_000_000} ETH`)
-        return sum
-      }
-
-      // Fetch ETH private balance with retry (same pattern as USDCX/USAD)
-      for (let attempt = 0; attempt <= 2; attempt++) {
-        if (privateBalance > 0n) break
-        if (attempt > 0) {
-          devLog(`[Balance] ETH private retry ${attempt}/2...`)
-          await new Promise(r => setTimeout(r, 1000))
-        }
-
-        // Try MetaMask direct first (most reliable)
-        if (privateBalance === 0n && connectedType === 'shield') {
-          const shieldObj = (window as any).shield || (window as any).shieldWallet || (window as any).shieldAleo
-          if (shieldObj) {
-            if (typeof shieldObj.requestRecordPlaintexts === 'function') {
-              try {
-                devLog('[Balance] ETH: Shield requestRecordPlaintexts(credits.aleo)...')
-                const result = await shieldObj.requestRecordPlaintexts('credits.aleo')
-                privateBalance = sumRecordsBalance(result, 'ETH-Shield-plaintexts')
-                if (privateBalance > 0n) break
-              } catch (err: any) {
-                devLog('[Balance] ETH Shield plaintexts failed:', err?.message || err)
-              }
-            }
-            if (privateBalance === 0n && typeof shieldObj.requestRecords === 'function') {
-              try {
-                devLog('[Balance] ETH: Shield requestRecords(credits.aleo)...')
-                const result = await shieldObj.requestRecords('credits.aleo')
-                privateBalance = sumRecordsBalance(result, 'ETH-Shield-records')
-                if (privateBalance > 0n) break
-              } catch (err: any) {
-                devLog('[Balance] ETH Shield records failed:', err?.message || err)
-              }
-            }
-          }
-        }
-
-        // Adapter API fallback
-        if (privateBalance === 0n && (window as any).__aleoRequestRecords) {
-          try {
-            devLog('[Balance] ETH: adapter requestRecords(credits.aleo)...')
-            const records = await (window as any).__aleoRequestRecords('credits.aleo', true)
-            privateBalance = sumRecordsBalance(records, 'ETH-adapter')
-        } catch (err: any) {
-          devLog('[Balance] ETH adapter failed:', err?.message || err)
-        }
-        }
-
-        // walletManager fallback
-        if (privateBalance === 0n) {
-          try {
-            devLog('[Balance] ETH: walletManager.getRecords(credits.aleo)...')
-            const records = await walletManager.getRecords('credits.aleo')
-            privateBalance = sumRecordsBalance(records, 'ETH-walletManager')
-          } catch {
-            // Non-critical
-          }
-        }
-      }
-
-      if (privateBalance > 0n) {
-        devLog(`[Balance] ETH private total: ${Number(privateBalance) / 1_000_000} ETH`)
-      } else {
-        devLog('[Balance] ETH private: 0 (records not found after 3 attempts)')
-      }
-
-      // Fetch USDCX public balance in parallel (non-blocking)
-      let usdcxPublic = 0n
-      try {
-        usdcxPublic = await fetchUsdcxPublicBalance(wallet.address)
-      } catch {
-        // USDCX balance is non-critical
-      }
-
-      // Fetch USDCX private balance from Token records (non-blocking)
-      // USDCX Token record has `amount` field (u128), not `microFHE`
-      let usdcxPrivate = 0n
-      const usdcxProgramId = config.usdcxProgramId || 'test_usdcx_stablecoin.aleo'
-
-      // Helper: parse USDCX amount from record (looks for `amount` field)
-      const parseUsdcxAmount = (text: string): bigint => {
-        const patterns = [
-          /amount["\s:]+(\d+)u128/,
-          /amount["\s:]+(\d+)u64/,
-          /amount["\s:]+(\d+)/,
-          /"amount"\s*:\s*"?(\d+)/,
-        ]
-        for (const pattern of patterns) {
-          const match = text.match(pattern)
-          if (match) return BigInt(match[1])
-        }
-        return 0n
-      }
-
-      // Helper: sum USDCX Token records
-      const sumUsdcxRecords = (records: any, label: string): bigint => {
-        const arr = Array.isArray(records) ? records : (records?.records || [])
-        if (arr.length === 0) return 0n
-        let sum = 0n
-        devLog(`[Balance] ${label}: ${arr.length} USDCX records`)
-        for (const r of arr) {
-          if (isRecordSpent(r)) continue
-          if (r && typeof r === 'object') {
-            const amt = r.amount ?? r.data?.amount
-            if (amt !== undefined) {
-              const cleaned = String(amt).replace(/[ui]\d+\.?\w*$/i, '').trim()
-              const digits = cleaned.replace(/[^\d]/g, '')
-              if (digits) { sum += BigInt(digits); continue }
-            }
-          }
-          const text = typeof r === 'string' ? r
-            : (r?.plaintext || r?.data || r?.record || r?.content || JSON.stringify(r))
-          sum += parseUsdcxAmount(String(text))
-        }
-        return sum
-      }
-
-      // Helper: fetch private token balance with retry for MetaMask
-      const fetchPrivateTokenBalance = async (
-        programId: string,
-        label: string,
-        maxRetries: number = 2,
-      ): Promise<bigint> => {
-        let result = 0n
-
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-          if (attempt > 0) {
-            devLog(`[Balance] ${label} retry ${attempt}/${maxRetries}...`)
-            await new Promise(r => setTimeout(r, 1000)) // Wait 1s between retries
-          }
-
-          // Method 1: MetaMask direct (most reliable for Shield)
-          if (result === 0n && connectedType === 'shield') {
-            const shieldObj = (window as any).shield || (window as any).shieldWallet || (window as any).shieldAleo
-            if (shieldObj) {
-              // Try requestRecordPlaintexts first (returns plaintext directly)
-              if (typeof shieldObj.requestRecordPlaintexts === 'function') {
-                try {
-                  devLog(`[Balance] ${label}: Shield requestRecordPlaintexts(${programId})...`)
-                  const records = await shieldObj.requestRecordPlaintexts(programId)
-                  result = sumUsdcxRecords(records, `${label}-Shield-plaintexts`)
-                  if (result > 0n) break
-                } catch (err: any) {
-                  devLog(`[Balance] ${label} Shield plaintexts failed:`, err?.message || err)
-                }
-              }
-              // Fallback: requestRecords
-              if (result === 0n && typeof shieldObj.requestRecords === 'function') {
-                try {
-                  devLog(`[Balance] ${label}: Shield requestRecords(${programId})...`)
-                  const records = await shieldObj.requestRecords(programId)
-                  result = sumUsdcxRecords(records, `${label}-Shield-records`)
-                  if (result > 0n) break
-                } catch (err: any) {
-                  devLog(`[Balance] ${label} Shield records failed:`, err?.message || err)
-                }
-              }
-            }
-          }
-
-          // Method 2: Adapter API (works for all wallet types)
-          if (result === 0n) {
-            const requestRecords = (window as any).__aleoRequestRecords
-            if (typeof requestRecords === 'function') {
-              try {
-                devLog(`[Balance] ${label}: adapter requestRecords(${programId})...`)
-                const records = await requestRecords(programId, true)
-                result = sumUsdcxRecords(records, `${label}-adapter`)
-                if (result > 0n) break
-              } catch (err: any) {
-                devLog(`[Balance] ${label} adapter failed:`, err?.message || err)
-              }
-            }
-          }
-
-          // Method 3: walletManager fallback
-          if (result === 0n) {
-            try {
-              devLog(`[Balance] ${label}: walletManager.getRecords(${programId})...`)
-              const records = await walletManager.getRecords(programId)
-              result = sumUsdcxRecords(records, `${label}-walletManager`)
-              if (result > 0n) break
-            } catch {
-              // Non-critical
-            }
-          }
-
-          // If all methods returned 0 on first try, retry (Shield sometimes needs warmup)
-          if (result > 0n) break
-        }
-
-        if (result > 0n) {
-          devLog(`[Balance] ${label} private total: ${Number(result) / 1_000_000}`)
-        } else {
-          devLog(`[Balance] ${label} private: 0 (records not found after ${maxRetries + 1} attempts)`)
-        }
-        return result
-      }
-
-      // Fetch USDCX and USAD private balances (with retry)
-      usdcxPrivate = await fetchPrivateTokenBalance(usdcxProgramId, 'USDCX')
-
-      // Fetch USAD public balance (same pattern as USDCX)
-      let usadPublic = 0n
-      try {
-        usadPublic = await fetchUsdcxPublicBalance(wallet.address, 'test_usad_stablecoin.aleo')
-      } catch {
-        // USAD balance is non-critical
-      }
-
-      // Fetch USAD private balance (same helper with retry)
-      let usadPrivate = 0n
-      const usadProgramId = 'test_usad_stablecoin.aleo'
-      usadPrivate = await fetchPrivateTokenBalance(usadProgramId, 'USAD')
-
-      // Record Scanner fallback — if wallet methods missed any private balances
-      if (privateBalance === 0n || usdcxPrivate === 0n || usadPrivate === 0n) {
-        try {
-          const { getAllPrivateBalances } = await import('./record-scanner');
-          const scanned = await getAllPrivateBalances();
-          if (privateBalance === 0n && scanned.aleoPrivate > 0n) {
-            privateBalance = scanned.aleoPrivate;
-            devLog(`[Balance] Scanner found ETH private: ${Number(scanned.aleoPrivate) / 1_000_000}`)
-          }
-          if (usdcxPrivate === 0n && scanned.usdcxPrivate > 0n) {
-            usdcxPrivate = scanned.usdcxPrivate;
-            devLog(`[Balance] Scanner found USDCX private: ${Number(scanned.usdcxPrivate) / 1_000_000}`)
-          }
-          if (usadPrivate === 0n && scanned.usadPrivate > 0n) {
-            usadPrivate = scanned.usadPrivate;
-            devLog(`[Balance] Scanner found USAD private: ${Number(scanned.usadPrivate) / 1_000_000}`)
-          }
-        } catch {
-          devLog('[Balance] Record scanner fallback unavailable')
-        }
-      }
-
-      const balance: WalletBalance = { public: publicBalance, private: privateBalance, usdcxPublic, usdcxPrivate, usadPublic, usadPrivate }
-
-      devLog('[Balance] Final:', {
-        public: `${Number(publicBalance) / 1_000_000} ETH`,
-        private: `${Number(privateBalance) / 1_000_000} ETH`,
-        usdcxPublic: `${Number(usdcxPublic) / 1_000_000} USDCX`,
-        usdcxPrivate: `${Number(usdcxPrivate) / 1_000_000} USDCX`,
-        usadPublic: `${Number(usadPublic) / 1_000_000} USAD`,
-        usadPrivate: `${Number(usadPrivate) / 1_000_000} USAD`,
-      })
+      // On Ethereum/Fhenix, there's no "private balance" concept like Aleo records.
+      // Encrypted share balances are stored in the FhenixMarkets contract.
+      const balance: WalletBalance = { public: publicBalance, private: 0n }
 
       set({
         wallet: {
@@ -620,33 +367,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
     }
   },
 
-  shieldCredits: async (amount: bigint) => {
-    const txId = await walletManager.shieldCredits(amount)
-
-    // Refresh balance after a delay to allow transaction to process
-    setTimeout(() => {
-      useWalletStore.getState().refreshBalance()
-    }, 3000)
-
-    // Poll for confirmation
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(
-          `${config.rpcUrl}/transaction/${txId}`
-        )
-        if (response.ok) {
-          clearInterval(pollInterval)
-          useWalletStore.getState().refreshBalance()
-        }
-      } catch {
-        // Not confirmed yet
-      }
-    }, 5000)
-
-    setTimeout(() => clearInterval(pollInterval), 120000)
-
-    return txId
-  },
+  // shieldCredits removed — Aleo-specific, not applicable on Ethereum/Fhenix
 
   testTransaction: async () => {
     const txId = await walletManager.testTransaction()
@@ -720,7 +441,7 @@ const calculateAMMFields = (yesPercentage: number, totalVolume: bigint) => {
 // ============================================================================
 // These markets are for UI demonstration only and are NOT on-chain.
 // Real markets created via the "Create Market" modal will be stored on-chain
-// in the veiled_markets_v35.aleo program.
+// in the FhenixMarkets.sol contract on Sepolia.
 //
 // TODO: Replace with real blockchain data once indexer is available
 // An indexer service will track market creation events and provide a list
@@ -1071,34 +792,34 @@ interface BetsStore {
 
 // Per-address localStorage key helpers
 function getBetsKey(address: string): string {
-  return `veiled_markets_bets_${address}`
+  return `fhenix_markets_bets_${address}`
 }
 function getPendingBetsKey(address: string): string {
-  return `veiled_markets_pending_${address}`
+  return `fhenix_markets_pending_${address}`
 }
 function getCommitmentsKey(address: string): string {
-  return `veiled_markets_commitments_${address}`
+  return `fhenix_markets_commitments_${address}`
 }
 
 // Migrate old global localStorage keys to per-address keys
 function migrateGlobalToAddressScoped(address: string): void {
   if (typeof window === 'undefined') return
   try {
-    const oldBets = localStorage.getItem('veiled_markets_user_bets')
-    const oldPending = localStorage.getItem('veiled_markets_pending_bets')
-    const oldCommitments = localStorage.getItem('veiled_markets_commitments')
+    const oldBets = localStorage.getItem('fhenix_markets_user_bets')
+    const oldPending = localStorage.getItem('fhenix_markets_pending_bets')
+    const oldCommitments = localStorage.getItem('fhenix_markets_commitments')
 
     if (oldBets && !localStorage.getItem(getBetsKey(address))) {
       localStorage.setItem(getBetsKey(address), oldBets)
-      localStorage.removeItem('veiled_markets_user_bets')
+      localStorage.removeItem('fhenix_markets_user_bets')
     }
     if (oldPending && !localStorage.getItem(getPendingBetsKey(address))) {
       localStorage.setItem(getPendingBetsKey(address), oldPending)
-      localStorage.removeItem('veiled_markets_pending_bets')
+      localStorage.removeItem('fhenix_markets_pending_bets')
     }
     if (oldCommitments && !localStorage.getItem(getCommitmentsKey(address))) {
       localStorage.setItem(getCommitmentsKey(address), oldCommitments)
-      localStorage.removeItem('veiled_markets_commitments')
+      localStorage.removeItem('fhenix_markets_commitments')
     }
   } catch (e) {
     console.error('Migration failed:', e)
@@ -1253,36 +974,14 @@ function saveCommitmentRecordsToStorage(records: CommitmentRecord[]) {
 // from the wallet and update sharesReceived with the real on-chain quantity.
 // Best-effort: silently fails if wallet doesn't support record fetching.
 
+// On Ethereum, share balances are encrypted in the FhenixMarkets contract (euint128).
+// No client-side record scanning needed — tx.wait() confirms shares on-chain.
 async function refreshSharesFromWallet(
-  bet: Bet,
-  get: () => { userBets: Bet[] },
-  set: (partial: Partial<{ userBets: Bet[] }>) => void,
+  _bet: Bet,
+  _get: () => { userBets: Bet[] },
+  _set: (partial: Partial<{ userBets: Bet[] }>) => void,
 ) {
-  try {
-    const { fetchOutcomeShareRecords } = await import('./credits-record')
-    const records = await fetchOutcomeShareRecords(CONTRACT_INFO.programId, bet.marketId)
-    if (records.length === 0) return
-
-    // Match by outcome (1-indexed)
-    const outcomeNum = outcomeToIndex(bet.outcome)
-    const matching = records.filter(r => r.outcome === outcomeNum)
-    if (matching.length === 0) return
-
-    // Use the record with the largest quantity (in case of multiple records for same outcome)
-    const bestMatch = matching.reduce((a, b) => a.quantity > b.quantity ? a : b)
-
-    if (bestMatch.quantity !== bet.sharesReceived) {
-      devWarn(`[Bets] Updating sharesReceived from wallet record: ${bet.sharesReceived?.toString()} → ${bestMatch.quantity.toString()}`)
-      const updatedBets = get().userBets.map(b =>
-        b.id === bet.id ? { ...b, sharesReceived: bestMatch.quantity } : b
-      )
-      set({ userBets: updatedBets })
-      saveBetsToStorage(updatedBets)
-    }
-  } catch (err) {
-    // Wallet may not support record fetching — stored minShares value is already correct
-    devLog('[Bets] refreshSharesFromWallet failed (non-critical):', err)
-  }
+  // No-op: Aleo record scanning removed. Share balances live in FHE contract state.
 }
 
 // ---- Supabase background sync helpers ----
@@ -1358,7 +1057,7 @@ async function resolvePendingBetStatus(bet: Bet): Promise<{
   status: 'confirmed' | 'rejected' | 'pending';
   transactionId?: string;
 }> {
-  if (bet.id.startsWith('at1')) {
+  if (bet.id.startsWith('0x')) {
     const diagnosis = await diagnoseTransaction(bet.id)
     if (diagnosis.status === 'accepted') {
       return { status: 'confirmed', transactionId: bet.id }
@@ -1371,7 +1070,7 @@ async function resolvePendingBetStatus(bet: Bet): Promise<{
   const walletStatus = await lookupWalletTransactionStatus(bet.id)
   const resolvedTxId = walletStatus?.transactionId
 
-  if (resolvedTxId?.startsWith('at1')) {
+  if (resolvedTxId?.startsWith('0x')) {
     try {
       const diagnosis = await diagnoseTransaction(resolvedTxId)
       if (diagnosis.status === 'accepted') {
@@ -1434,26 +1133,14 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
       const market = realMarkets.find(m => m.id === marketId)
       const marketQuestion = market?.question || `Market ${marketId}`
 
-      // Build inputs for the active market contract.
-      // ETH uses buy_shares_private, stablecoins use Token.record + MerkleProof.
-      const tokenType = market?.tokenType || 'ETH'
+      // Build inputs for the active market contract (ETH only).
+      const tokenType = 'ETH'
       const outcomeNum = outcomeToIndex(outcome)
 
       let creditsRecord: string | undefined
 
-      if (tokenType === 'ETH') {
-        const { fetchCreditsRecord } = await import('./credits-record')
-        const gasBuffer = 500_000
-        const totalNeeded = Number(amount) + gasBuffer
-        const record = await fetchCreditsRecord(totalNeeded, walletState.address)
-        if (!record) {
-          throw new Error(
-            `Could not find a Credits record with at least ${(totalNeeded / 1_000_000).toFixed(2)} ETH. ` +
-            `Private betting requires an unspent Credits record.`
-          )
-        }
-        creditsRecord = record
-      }
+      // On Ethereum, no credits record needed — ETH is sent as msg.value
+      void tokenType
 
       const { functionName: betFunctionName, inputs } = buildBuySharesInputs(
         marketId,
@@ -1461,30 +1148,9 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
         amount,
         0n, // expectedShares
         0n, // minSharesOut
-        tokenType as 'ETH' | 'USDCX' | 'USAD',
+        'ETH',
         creditsRecord,
       )
-
-      if (tokenType === 'USDCX' || tokenType === 'USAD') {
-        const [{ findTokenRecord }, { buildMerkleProofsForAddress }] = await Promise.all([
-          import('./private-stablecoin'),
-          import('./aleo-client'),
-        ])
-
-        const tokenRecord = await findTokenRecord(tokenType, amount)
-        if (!tokenRecord) {
-          throw new Error(
-            `No private ${tokenType} Token record found with at least ${(Number(amount) / 1_000_000).toFixed(2)} ${tokenType}.`
-          )
-        }
-
-        inputs.push(tokenRecord)
-        const walletAddress = useWalletStore.getState().wallet.address
-        if (!walletAddress) {
-          throw new Error('Wallet address is unavailable. Please reconnect your wallet and try again.')
-        }
-        inputs.push(await buildMerkleProofsForAddress(walletAddress))
-      }
 
       devLog('=== PLACE BET DEBUG ===')
       devLog('Market ID:', marketId)
@@ -1504,13 +1170,12 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
       }
 
       // Request transaction through wallet
-      const programId = getProgramIdForToken(tokenType)
+      const programId = getProgramIdForToken('ETH')
       const transactionId = await walletManager.requestTransaction({
         programId,
         functionName: betFunctionName,
         inputs,
         fee: 1.5, // 1.5 ETH fee for v31
-        recordIndices: tokenType === 'USDCX' || tokenType === 'USAD' ? [6] : undefined,
       })
 
       devLog('Bet transaction submitted:', transactionId)
@@ -1561,7 +1226,7 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
       // Poll for transaction confirmation
       // If we got a UUID (MetaMask event ID) instead of at1... tx ID,
       // skip explorer polling - the bet was accepted by the wallet
-      const isRealTxId = transactionId.startsWith('at1')
+      const isRealTxId = transactionId.startsWith('0x')
 
       if (isRealTxId) {
         // Real at1... tx ID: poll the explorer for confirmation
@@ -1650,7 +1315,7 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
     }
   },
 
-  // Save a bet from external transaction flow (e.g. BettingModal using useAleoTransaction)
+  // Save a bet from external transaction flow (e.g. BettingModal)
   addPendingBet: (bet: Bet) => {
     const address = useWalletStore.getState().wallet.address
     devWarn('[Bets] addPendingBet called:', {
@@ -1677,7 +1342,7 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
 
     // Verify it was saved to localStorage
     if (address) {
-      const saved = localStorage.getItem(`veiled_markets_pending_${address}`)
+      const saved = localStorage.getItem(`fhenix_markets_pending_${address}`)
       devWarn('[Bets] localStorage verification:', saved ? `${JSON.parse(saved).length} bets saved` : 'EMPTY/NULL')
     }
   },
@@ -1954,7 +1619,7 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
     // --- Repair legacy false-active bets whose original tx was actually rejected ---
     const rejectedActiveBetIds: string[] = []
     for (const bet of get().userBets) {
-      if (bet.status !== 'active' || bet.type === 'sell' || !bet.id.startsWith('at1')) continue
+      if (bet.status !== 'active' || bet.type === 'sell' || !bet.id.startsWith('0x')) continue
       try {
         const diagnosis = await diagnoseTransaction(bet.id)
         if (diagnosis.status === 'rejected') {
@@ -1980,7 +1645,7 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
 
     // Get unique market IDs (only real on-chain markets ending with 'field')
     const marketIds = [...new Set(activeBets.map(b => b.marketId))]
-      .filter(id => id.endsWith('field'))
+      .filter(id => id.startsWith('0x'))
 
     const updates: Array<{ betId: string; newStatus: Bet['status']; payoutAmount?: bigint; winningOutcome?: string }> = []
 
@@ -2063,62 +1728,10 @@ export const useBetsStore = create<BetsStore>((set, get) => ({
 
     if (claimedBets.length === 0) return 0
 
-    try {
-      const { fetchOutcomeShareRecords } = await import('./credits-record')
-      const restoredBetIds = new Set<string>()
-      const groups = new Map<string, Bet[]>()
-
-      for (const bet of claimedBets) {
-        const tokenType = (bet.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-        const groupKey = `${getProgramIdForToken(tokenType)}::${bet.marketId}`
-        const existing = groups.get(groupKey) || []
-        existing.push(bet)
-        groups.set(groupKey, existing)
-      }
-
-      for (const bets of groups.values()) {
-        const sampleBet = bets[0]
-        const tokenType = (sampleBet.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-        const programId = getProgramIdForToken(tokenType)
-
-        let records = await fetchOutcomeShareRecords(programId, sampleBet.marketId)
-        records = records.filter(record => !record.owner || record.owner === address)
-
-        if (records.length === 0) continue
-
-        const remainingRecords = [...records]
-        for (const bet of bets) {
-          const expectedOutcome = outcomeToIndex(bet.outcome)
-          const expectedQuantity = bet.sharesReceived || bet.amount
-          const matchIndex = remainingRecords.findIndex(record =>
-            (!record.marketId || record.marketId === bet.marketId)
-            && record.outcome === expectedOutcome
-            && record.quantity === expectedQuantity
-          )
-
-          if (matchIndex >= 0) {
-            restoredBetIds.add(bet.id)
-            remainingRecords.splice(matchIndex, 1)
-          }
-        }
-      }
-
-      if (restoredBetIds.size === 0) return 0
-
-      const updatedBets = get().userBets.map(bet =>
-        restoredBetIds.has(bet.id)
-          ? { ...bet, claimed: false }
-          : bet
-      )
-
-      set({ userBets: updatedBets })
-      saveBetsToStorage(updatedBets)
-      devWarn(`[Bets] Restored ${restoredBetIds.size} claimed bet(s) after wallet reconciliation`)
-      return restoredBetIds.size
-    } catch (err) {
-      devWarn('[Bets] Failed to reconcile claimed bets:', err)
-      return 0
-    }
+    // On Ethereum, share balances are in FHE contract state — no client-side record scanning.
+    // Bet status is already tracked locally via tx receipts.
+    void claimedBets
+    return 0
   },
 
   getBetsByMarket: (marketId) => {

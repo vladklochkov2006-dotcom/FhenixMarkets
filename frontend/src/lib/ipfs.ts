@@ -33,7 +33,7 @@ export interface MarketMetadataIPFS {
   resolutionSource: string
   questionHash: string
   creator: string
-  tokenType: 'ETH' | 'USDCX' | 'USAD'
+  tokenType: 'ETH'
   createdAt: number
 }
 
@@ -51,7 +51,7 @@ export async function uploadImageToIPFS(file: File): Promise<string | null> {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('pinataMetadata', JSON.stringify({
-      name: `veiled-thumb-${Date.now()}`,
+      name: `fhenix-thumb-${Date.now()}`,
       keyvalues: { app: 'fhenix-markets', type: 'thumbnail' },
     }))
     formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }))
@@ -101,7 +101,7 @@ export async function uploadMarketMetadata(
       body: JSON.stringify({
         pinataContent: metadata,
         pinataMetadata: {
-          name: `veiled-market-${metadata.questionHash.slice(0, 20)}`,
+          name: `fhenix-market-${metadata.questionHash.slice(0, 20)}`,
           keyvalues: {
             app: 'fhenix-markets',
             questionHash: metadata.questionHash,

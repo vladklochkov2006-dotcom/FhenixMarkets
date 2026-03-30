@@ -29,6 +29,13 @@ export interface MarketRegistryEntry {
   ipfs_cid?: string
   outcome_labels?: string  // JSON-encoded string[]
   thumbnail_url?: string
+  // New fields for Fhenix (Supabase-first mode)
+  num_outcomes?: number
+  deadline?: number          // unix ms
+  resolution_deadline?: number // unix ms
+  status?: number            // 1=active, 2=closed, 3=resolved, 4=cancelled
+  token_type?: string        // ETH
+  initial_liquidity?: number // in micro units
 }
 
 // Initialize Supabase client (null if env vars not configured)

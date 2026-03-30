@@ -18,8 +18,8 @@ const MIN_INTERVAL_MS = 60_000 // 1 minute minimum between snapshots
 const lastRecordedTime = new Map<string, number>()
 
 function storageKey(marketId: string): string {
-  const short = marketId.replace('field', '').slice(0, 20)
-  return `veiled_price_history_${short}`
+  const short = marketId.slice(2, 22)
+  return `fhenix_price_history_${short}`
 }
 
 /**

@@ -132,7 +132,7 @@ function MarketSlide({
           <div className="flex flex-wrap items-center gap-2 text-xs text-surface-500 lg:max-w-[30%] lg:justify-end lg:pl-4">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.04] bg-white/[0.02] px-2.5 py-1.5">
               <TrendingUp className="h-3.5 w-3.5" />
-              <span className="tabular-nums">{formatCredits(market.totalVolume, 0)} {market.tokenType ?? 'ETH'}</span>
+              <span className="tabular-nums">{formatCredits(market.totalVolume, 0)} ETH</span>
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.04] bg-white/[0.02] px-2.5 py-1.5">
               <span className="tabular-nums">{market.totalBets}</span>
@@ -404,17 +404,7 @@ export function DashboardHero({
   )
 
   const ethVolume = useMemo(
-    () => markets.filter(m => !m.tokenType || m.tokenType === 'ETH').reduce((sum, m) => sum + m.totalVolume, 0n),
-    [markets]
-  )
-
-  const usdcxVolume = useMemo(
-    () => markets.filter(m => m.tokenType === 'USDCX').reduce((sum, m) => sum + m.totalVolume, 0n),
-    [markets]
-  )
-
-  const usadVolume = useMemo(
-    () => markets.filter(m => m.tokenType === 'USAD').reduce((sum, m) => sum + m.totalVolume, 0n),
+    () => markets.reduce((sum, m) => sum + m.totalVolume, 0n),
     [markets]
   )
 
@@ -661,18 +651,6 @@ export function DashboardHero({
               label="ETH Volume"
               value={`${formatCredits(ethVolume)} ETH`}
               color="text-brand-400"
-            />
-            <StatRow
-              icon={<img src="/usdcx-logo.svg" alt="USDCX" className="h-4 w-4 rounded-full object-contain" />}
-              label="USDCX Volume"
-              value={`${formatCredits(usdcxVolume)} USDCX`}
-              color="text-blue-400"
-            />
-            <StatRow
-              icon={<img src="/usad-logo.svg" alt="USAD" className="h-4 w-4 rounded-full object-contain" />}
-              label="USAD Volume"
-              value={`${formatCredits(usadVolume)} USAD`}
-              color="text-purple-400"
             />
           </div>
         </div>

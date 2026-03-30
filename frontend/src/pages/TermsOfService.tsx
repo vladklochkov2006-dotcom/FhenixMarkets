@@ -140,7 +140,7 @@ export function TermsOfService() {
           <section>
             <h2 className="text-lg font-semibold text-white mb-4">10. Limitation of Liability</h2>
             <p>
-              TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, VEILED MARKETS AND ITS CONTRIBUTORS
+              TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, FHENIX MARKETS AND ITS CONTRIBUTORS
               SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE
               DAMAGES, OR ANY LOSS OF PROFITS, DATA, USE, OR GOODWILL, ARISING FROM YOUR USE OF THE PROTOCOL.
             </p>

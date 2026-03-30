@@ -16,7 +16,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useWalletStore } from '@/lib/store'
 import { cn, shortenAddress, formatCredits } from '@/lib/utils'
-import { useWalletModal } from '@provablehq/aleo-wallet-adaptor-react-ui'
+import { usePrivyModal as useWalletModal } from '@/hooks/usePrivyWallet'
 
 const NAV_ITEMS = [
   { path: '/dashboard', label: 'Markets' },
@@ -215,7 +215,7 @@ export function Header() {
 
                         <div className="p-1 mt-1 space-y-0.5">
                           <a
-                            href={`https://testnet.explorer.provable.com/address/${wallet.address}`}
+                            href={`https://sepolia.etherscan.io/address/${wallet.address}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs text-surface-300 hover:text-white hover:bg-white/[0.04] transition-colors"
@@ -241,7 +241,11 @@ export function Header() {
                 </div>
               ) : (
                 <button
-                  onClick={() => setVisible(true)}
+                  onClick={() => {
+                    const privyLogin = (window as any).__privyLogin
+                    if (privyLogin) privyLogin()
+                    else setVisible(true)
+                  }}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm active:scale-[0.96] transition-all duration-200"
                   style={{
                     background: 'linear-gradient(135deg, #0AD9DC 0%, #09c2c5 100%)',

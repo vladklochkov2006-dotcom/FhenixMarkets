@@ -22,11 +22,11 @@ export function formatNumber(num: number): string {
 }
 
 /**
- * Format credits (microFHE to credits)
+ * Format wei to ETH display string
  */
-export function formatCredits(microFHE: bigint, decimals: number = 2): string {
-  const credits = Number(microFHE) / 1_000_000
-  return credits.toLocaleString(undefined, {
+export function formatCredits(wei: bigint, decimals: number = 2): string {
+  const eth = Number(wei) / 1e18
+  return eth.toLocaleString(undefined, {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   })
@@ -35,16 +35,14 @@ export function formatCredits(microFHE: bigint, decimals: number = 2): string {
 /**
  * Token type helpers
  */
-export type TokenType = 'ETH' | 'USDCX' | 'USAD'
+export type TokenType = 'ETH'
 
-export function getTokenSymbol(tokenType?: TokenType | number): string {
-  if (tokenType === 3 || tokenType === 'USAD') return 'USAD'
-  if (tokenType === 2 || tokenType === 'USDCX') return 'USDCX'
+export function getTokenSymbol(_tokenType?: TokenType | number): string {
   return 'ETH'
 }
 
 /**
- * Format token amount (both ETH and USDCX use 6 decimals)
+ * Format token amount (ETH, 18 decimals)
  */
 export function formatTokenAmount(microAmount: bigint, _tokenType?: TokenType, decimals: number = 2): string {
   return formatCredits(microAmount, decimals)
@@ -188,11 +186,11 @@ export function safeHostname(url: string): string | null {
 }
 
 /**
- * Validate Fhenix address format (aleo1... followed by 58 alphanumeric chars)
+ * Validate Ethereum address format (0x followed by 40 hex chars)
  */
-export function isValidAleoAddress(addr: string | undefined | null): boolean {
+export function isValidAddress(addr: string | undefined | null): boolean {
   if (!addr) return false
-  return /^aleo1[a-z0-9]{58}$/.test(addr)
+  return /^0x[0-9a-fA-F]{40}$/.test(addr)
 }
 
 /**

@@ -1,26 +1,25 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowRight, ArrowLeft, AlertCircle, CheckCircle2, Lightbulb,
-  Plus, Calendar, Hash, FileText, Shield, Coins, Clock, ExternalLink,
-  Check, Loader2, Info, AlertTriangle, X, DollarSign, Globe, Layers, Tag,
+  Shield, Coins, ExternalLink,
+  Check, Loader2, AlertTriangle, DollarSign,
   Upload, Link, Image,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWalletStore } from '@/lib/store'
-import { config } from '@/lib/config'
-import { cn, formatCredits, sanitizeUrl } from '@/lib/utils'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
+import { cn, sanitizeUrl } from '@/lib/utils'
 import {
-  hashToField, getCurrentBlockHeight, CONTRACT_INFO, getTransactionUrl,
-  getMappingValue,
-  registerQuestionText, registerOutcomeLabels, registerMarketTransaction, setMarketThumbnailUrl,
-  waitForMarketCreation, savePendingMarket, updatePendingMarketTxId,
-} from '@/lib/aleo-client'
+  createMarket as contractCreateMarket,
+  computeQuestionHash,
+  parseEth,
+  parseContractError,
+  ensureSepoliaNetwork,
+} from '@/lib/contracts'
 import { registerMarketInRegistry, isSupabaseAvailable } from '@/lib/supabase'
-import { uploadMarketMetadata, uploadImageToIPFS, isPinataAvailable, type MarketMetadataIPFS } from '@/lib/ipfs'
-import { saveIPFSCid, getMarket } from '@/lib/aleo-client'
+import { uploadMarketMetadata, uploadImageToIPFS, isPinataAvailable } from '@/lib/ipfs'
 import { devLog, devWarn } from '@/lib/logger'
+import { ethers } from 'ethers'
 import { DashboardHeader } from '@/components/DashboardHeader'
 import { Footer } from '@/components/Footer'
 
@@ -38,7 +37,7 @@ interface MarketFormData {
   resolutionDeadlineDate: string
   resolutionDeadlineTime: string
   resolutionSource: string
-  tokenType: 'ETH' | 'USDCX' | 'USAD'
+  tokenType: 'ETH'
   thumbnailUrl: string
 }
 
@@ -55,106 +54,18 @@ const categories = [
 
 const initialFormData: MarketFormData = {
   question: '', description: '', category: 3, numOutcomes: 2,
-  outcomeLabels: ['Yes', 'No', '', ''], initialLiquidity: '10',
+  outcomeLabels: ['Yes', 'No', '', ''], initialLiquidity: '0.01',
   deadlineDate: '', deadlineTime: '23:59',
   resolutionDeadlineDate: '', resolutionDeadlineTime: '23:59',
   resolutionSource: '', tokenType: 'ETH',
   thumbnailUrl: '',
 }
 
-const CREATE_MARKET_PROGRAM_ID = CONTRACT_INFO.programId
 const DRAFT_KEY = 'fhenix_create_market_draft'
 function saveDraft(data: MarketFormData) { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(data)) } catch {} }
 function loadDraft(): MarketFormData | null { try { const raw = localStorage.getItem(DRAFT_KEY); return raw ? JSON.parse(raw) : null } catch { return null } }
 function clearDraft() { try { localStorage.removeItem(DRAFT_KEY) } catch {} }
 function hasFormContent(data: MarketFormData) { return data.question.trim() !== '' || data.description.trim() !== '' }
-
-function getCreateMarketBalanceError(
-  tokenType: 'ETH' | 'USDCX' | 'USAD',
-  liquidityMicro: bigint,
-  balances: {
-    public: bigint
-    private: bigint
-    usdcxPublic: bigint
-    usadPublic: bigint
-  },
-): string | null {
-  const feeMicro = 1_500_000n
-
-  if (tokenType === 'ETH') {
-    const totalNeeded = liquidityMicro + feeMicro
-    if (balances.public < totalNeeded) {
-      return (
-        `Insufficient public ETH. Market creation uses public ETH, not private credits. ` +
-        `Need ${formatCredits(totalNeeded)} ETH total ` +
-        `(${formatCredits(liquidityMicro)} ETH liquidity + ${formatCredits(feeMicro)} ETH fee), ` +
-        `but only have ${formatCredits(balances.public)} public ETH. ` +
-        `Private ETH available: ${formatCredits(balances.private)}.`
-      )
-    }
-    return null
-  }
-
-  const publicStableBalance = tokenType === 'USDCX' ? balances.usdcxPublic : balances.usadPublic
-  const privateStableBalance = tokenType === 'USDCX' ? balances.usdcxPrivate : balances.usadPrivate
-  if (publicStableBalance < liquidityMicro) {
-    return (
-      `Insufficient public ${tokenType}. Market creation uses public ${tokenType} for initial liquidity via transfer_public_as_signer. ` +
-      `Need ${formatCredits(liquidityMicro)} ${tokenType}, ` +
-      `but only have ${formatCredits(publicStableBalance)} public ${tokenType}.` +
-      (privateStableBalance > 0n
-        ? ` Private ${tokenType} available: ${formatCredits(privateStableBalance)}. Unshield ${tokenType} first.`
-        : '')
-    )
-  }
-
-  if (balances.public < 1_500_000n) {
-    return (
-      `Insufficient public ETH for network fee. Market creation also needs ${formatCredits(1_500_000n)} public ETH ` +
-      `for the transaction fee, but only have ${formatCredits(balances.public)} public ETH.`
-    )
-  }
-
-  return null
-}
-
-async function getStablecoinCreateFundingError(
-  tokenType: 'USDCX' | 'USAD',
-  address: string,
-  liquidityMicro: bigint,
-  balances: {
-    public: bigint
-    private: bigint
-    usdcxPublic: bigint
-    usdcxPrivate: bigint
-    usadPublic: bigint
-    usadPrivate: bigint
-  },
-): Promise<string | null> {
-  const stableProgramId = tokenType === 'USAD' ? 'test_usad_stablecoin.aleo' : config.usdcxProgramId
-  const privateStableBalance = tokenType === 'USDCX' ? balances.usdcxPrivate : balances.usadPrivate
-
-  try {
-    const onChainPublicBalance = await getMappingValue<bigint>('balances', address, stableProgramId)
-    const livePublicBalance = onChainPublicBalance ?? 0n
-
-    if (livePublicBalance < liquidityMicro) {
-      return (
-        `On-chain public ${tokenType} is too low for market creation. ` +
-        `create_market_${tokenType.toLowerCase()} calls ${stableProgramId}/transfer_public_as_signer, ` +
-        `so only public ${tokenType} can fund the initial liquidity. ` +
-        `Need ${formatCredits(liquidityMicro)} ${tokenType}, but the stablecoin mapping shows ${formatCredits(livePublicBalance)} public ${tokenType}.` +
-        (privateStableBalance > 0n
-          ? ` You still have ${formatCredits(privateStableBalance)} private ${tokenType}; unshield it first.`
-          : '')
-      )
-    }
-  } catch (error) {
-    devWarn(`[CreateMarket] Failed to verify live public ${tokenType} balance:`, error)
-  }
-
-  return null
-}
 
 // ── Thumbnail Input (URL or file upload) ──
 function ThumbnailInput({ value, onChange }: { value: string; onChange: (url: string) => void }) {
@@ -276,11 +187,12 @@ function ThumbnailInput({ value, onChange }: { value: string; onChange: (url: st
 export function CreateMarketPage() {
   const navigate = useNavigate()
   const { wallet } = useWalletStore()
-  const { executeTransaction, pollTransactionStatus } = useAleoTransaction()
+  // Contract calls via contracts.ts
   const [step, setStep] = useState<CreateStep>('details')
   const [formData, setFormData] = useState<MarketFormData>(initialFormData)
   const [error, setError] = useState<string | null>(null)
   const [marketId, setMarketId] = useState<string | null>(null)
+  const [txHash, setTxHash] = useState<string | null>(null)
   const [isSlowTransaction, setIsSlowTransaction] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -323,7 +235,7 @@ export function CreateMarketPage() {
       return false
     }
     const liq = parseFloat(formData.initialLiquidity)
-    if (isNaN(liq) || liq < 1) { setError('Initial liquidity must be at least 1 token'); return false }
+    if (isNaN(liq) || liq < 0.01) { setError('Initial liquidity must be at least 0.01 ETH'); return false }
     if (liq > 10_000) { setError('Initial liquidity cannot exceed 10,000 tokens'); return false }
     setError(null); return true
   }
@@ -346,67 +258,44 @@ export function CreateMarketPage() {
     if (!validateTiming()) { setStep('timing'); return }
     setIsSubmitting(true); setStep('creating'); setError(null)
     try {
-      const questionHash = await hashToField(formData.question)
-      if (!questionHash) throw new Error('Failed to generate question hash')
-      const currentBlock = await getCurrentBlockHeight()
+      await ensureSepoliaNetwork()
+
+      const questionHash = computeQuestionHash(formData.question)
       const deadlineDate = new Date(`${formData.deadlineDate}T${formData.deadlineTime}`)
       const resolutionDate = new Date(`${formData.resolutionDeadlineDate}T${formData.resolutionDeadlineTime}`)
-      const deadlineBlockHeight = currentBlock + BigInt(Math.floor((deadlineDate.getTime() - Date.now()) / config.msPerBlock))
-      const resolutionBlockHeight = currentBlock + BigInt(Math.floor((resolutionDate.getTime() - Date.now()) / config.msPerBlock))
+      const deadlineTimestamp = BigInt(Math.floor(deadlineDate.getTime() / 1000))
+      const resolutionTimestamp = BigInt(Math.floor(resolutionDate.getTime() / 1000))
 
-      const liquidityMicro = BigInt(Math.floor(parseFloat(formData.initialLiquidity || '10') * 1_000_000))
-      const inputs = [
-        String(questionHash),
-        `${Number(formData.category)}u8`,
-        `${Number(formData.numOutcomes)}u8`,
-        `${deadlineBlockHeight.toString()}u64`,
-        `${resolutionBlockHeight.toString()}u64`,
-        wallet.address!,
-        `${liquidityMicro}u128`,
-      ]
+      const liquidityWei = parseEth(formData.initialLiquidity || '10')
 
-      const createProgramId = formData.tokenType === 'USAD' ? config.usadProgramId
-        : formData.tokenType === 'USDCX' ? config.usdcxMarketProgramId
-        : config.programId
-
-      // v33: No resolver whitelist — Open Voting + Bond system allows anyone to resolve
-
-      for (let i = 0; i < inputs.length; i++) {
-        if (typeof inputs[i] !== 'string' || !inputs[i]) throw new Error(`Input ${i} is invalid`)
-      }
-      if (deadlineBlockHeight <= currentBlock) throw new Error('Deadline must be in the future')
-      if (resolutionBlockHeight <= deadlineBlockHeight) throw new Error('Resolution deadline must be after betting deadline')
-      if (!wallet.isDemoMode) {
-        const balanceError = getCreateMarketBalanceError(formData.tokenType, liquidityMicro, wallet.balance)
-        if (balanceError) throw new Error(balanceError)
-        if (formData.tokenType !== 'ETH') {
-          const fundingError = await getStablecoinCreateFundingError(
-            formData.tokenType,
-            wallet.address!,
-            liquidityMicro,
-            wallet.balance,
-          )
-          if (fundingError) throw new Error(fundingError)
-        }
-      }
+      if (deadlineTimestamp <= BigInt(Math.floor(Date.now() / 1000))) throw new Error('Deadline must be in the future')
+      if (resolutionTimestamp <= deadlineTimestamp) throw new Error('Resolution deadline must be after betting deadline')
 
       setIsSlowTransaction(false)
       const slowTimer = setTimeout(() => setIsSlowTransaction(true), 30_000)
 
-      const createFn = formData.tokenType === 'USAD' ? 'create_market_usad' : formData.tokenType === 'USDCX' ? 'create_market_usdcx' : 'create_market'
-      const txPromise = executeTransaction({ program: createProgramId, function: createFn, inputs, fee: 1.5 })
-      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Wallet did not respond within 2 minutes.')), 120_000))
+      let receipt: ethers.TransactionReceipt
+      try {
+        receipt = await contractCreateMarket(
+          questionHash,
+          Number(formData.category),
+          Number(formData.numOutcomes),
+          deadlineTimestamp,
+          resolutionTimestamp,
+          wallet.address!, // resolver = creator
+          liquidityWei,
+        )
+      } finally { clearTimeout(slowTimer) }
 
-      let result: { transactionId?: string }; let transactionId: string
-      try { result = await Promise.race([txPromise, timeoutPromise]); transactionId = result?.transactionId || ''; if (!transactionId) throw new Error('No transaction ID returned') } finally { clearTimeout(slowTimer) }
-
-      registerQuestionText(questionHash, formData.question)
-      registerMarketTransaction(questionHash, transactionId)
+      const transactionId = receipt.hash
+      setTxHash(transactionId)
       const activeLabels = formData.outcomeLabels.slice(0, formData.numOutcomes)
-      registerOutcomeLabels(questionHash, activeLabels)
-      if (formData.thumbnailUrl) {
-        setMarketThumbnailUrl(questionHash, formData.thumbnailUrl)
-      }
+
+      // Parse MarketCreated event to get the real on-chain marketId
+      const marketCreatedTopic = ethers.id('MarketCreated(bytes32,address,bytes32,uint8,uint64,uint128)')
+      const marketCreatedLog = receipt.logs.find((log: any) => log.topics[0] === marketCreatedTopic)
+      const onChainMarketId = marketCreatedLog?.topics[1] || questionHash
+      devLog('[CreateMarket] On-chain marketId:', onChainMarketId)
 
       let ipfsCid: string | null = null
       if (isPinataAvailable()) {
@@ -417,89 +306,22 @@ export function CreateMarketPage() {
             resolutionSource: formData.resolutionSource || '', questionHash,
             creator: wallet.address!, tokenType: formData.tokenType, createdAt: Date.now(),
           })
-          if (ipfsCid) saveIPFSCid(questionHash, ipfsCid)
         } catch (err) { devWarn('[CreateMarket] IPFS upload failed:', err) }
       }
 
-      setMarketId(transactionId); clearDraft(); setStep('success')
-      savePendingMarket({
-        questionHash,
-        questionText: formData.question,
-        transactionId,
-        programId: createProgramId,
-        tokenType: formData.tokenType,
-        createdAt: Date.now(),
-      })
+      setMarketId(onChainMarketId); clearDraft(); setStep('success')
 
       if (isSupabaseAvailable()) {
         registerMarketInRegistry({
-          market_id: `pending_${transactionId}`, question_hash: questionHash, question_text: formData.question,
+          market_id: onChainMarketId, question_hash: questionHash, question_text: formData.question,
           description: formData.description || undefined, resolution_source: formData.resolutionSource || undefined,
           thumbnail_url: formData.thumbnailUrl || undefined,
           category: formData.category, creator_address: wallet.address!, transaction_id: transactionId,
           created_at: Date.now(), ipfs_cid: ipfsCid || undefined, outcome_labels: JSON.stringify(activeLabels),
-        }).catch(err => devWarn('[CreateMarket] Early Supabase register failed:', err))
+        }).catch(err => devWarn('[CreateMarket] Supabase register failed:', err))
       }
-
-      // Background resolution (same 3-strategy approach)
-      const resolveAndRegister = async () => {
-        let resolved = false
-        const onMarketFound = async (actualMarketId: string, onChainTxId: string) => {
-          if (resolved) return; resolved = true
-          registerOutcomeLabels(actualMarketId, activeLabels)
-          if (ipfsCid) saveIPFSCid(actualMarketId, ipfsCid)
-          if (formData.thumbnailUrl) setMarketThumbnailUrl(actualMarketId, formData.thumbnailUrl)
-          let creatorAddress = wallet.address!
-          try { const m = await getMarket(actualMarketId); if (m?.creator) creatorAddress = m.creator } catch {}
-          if (isSupabaseAvailable()) {
-            registerMarketInRegistry({ market_id: actualMarketId, question_hash: questionHash, question_text: formData.question, description: formData.description || undefined, resolution_source: formData.resolutionSource || undefined, thumbnail_url: formData.thumbnailUrl || undefined, category: formData.category, creator_address: creatorAddress, transaction_id: onChainTxId || transactionId, created_at: Date.now(), ipfs_cid: ipfsCid || undefined, outcome_labels: JSON.stringify(activeLabels) }).catch(() => {})
-            import('@/lib/supabase').then(({ supabase: sb }) => { if (sb) Promise.resolve(sb.from('market_registry').delete().eq('market_id', `pending_${transactionId}`)).catch(() => {}) }).catch(() => {})
-          }
-        }
-        const strategy1 = async () => {
-          if (transactionId.startsWith('demo_')) return
-          let onChainTxId = transactionId
-          if (!transactionId.startsWith('at1')) {
-            onChainTxId = await new Promise<string>((resolve) => {
-              let done = false; const finish = (id: string) => { if (!done) { done = true; resolve(id) } }
-              setTimeout(() => finish(transactionId), transactionId.startsWith('shield_') ? 90_000 : 300_000)
-              pollTransactionStatus(transactionId, (status, txId) => { if (txId?.startsWith('at1')) finish(txId); else if (status === 'confirmed') finish(txId || transactionId); else if (status === 'failed' || status === 'unknown') finish(transactionId) }, transactionId.startsWith('shield_') ? 8 : 30, 10_000)
-            })
-          }
-          if (resolved) return
-          if (onChainTxId.startsWith('at1')) {
-            updatePendingMarketTxId(questionHash, onChainTxId)
-            const r = await waitForMarketCreation(onChainTxId, questionHash, formData.question, 20, 15000, createProgramId)
-            if (r && !resolved) onMarketFound(r.marketId, r.transactionId)
-          }
-        }
-        const strategy2 = async () => {
-          await new Promise(r => setTimeout(r, transactionId.startsWith('shield_') || transactionId.startsWith('demo_') ? 5_000 : 30_000))
-          if (resolved) return
-          const r = await waitForMarketCreation('scan', questionHash, formData.question, 20, 15000, createProgramId)
-          if (r && !resolved) onMarketFound(r.marketId, r.transactionId)
-          if (!resolved && (transactionId.startsWith('shield_') || transactionId.startsWith('demo_'))) {
-            await new Promise(r2 => setTimeout(r2, 60_000))
-            if (resolved) return
-            const r3 = await waitForMarketCreation('scan', questionHash, formData.question, 20, 15000, createProgramId)
-            if (r3 && !resolved) onMarketFound(r3.marketId, r3.transactionId)
-          }
-        }
-        await Promise.allSettled([strategy1(), strategy2()])
-      }
-      resolveAndRegister().catch(console.error)
     } catch (err: unknown) {
-      const errObj = err as any; const msg = errObj?.message || String(err)
-      let errorMsg = msg
-      if (msg.includes('abort')) errorMsg = 'Network request timed out.'
-      else if (msg.includes('Resolver') && msg.includes('not approved')) errorMsg = msg
-      else if (
-        msg.toLowerCase().includes('rejected by user')
-        || msg.toLowerCase().includes('user rejected')
-        || msg.toLowerCase().includes('denied by user')
-        || msg.toLowerCase().includes('cancelled by user')
-        || msg.toLowerCase().includes('canceled by user')
-      ) errorMsg = 'Transaction was rejected in your wallet.'
+      const errorMsg = parseContractError(err)
       setError(errorMsg); setStep('error'); setIsSubmitting(false)
     }
   }
@@ -599,14 +421,9 @@ export function CreateMarketPage() {
                       </div>
                       <div>
                         <label className="text-sm font-medium text-white mb-3 block">Betting Token</label>
-                        <div className="grid grid-cols-3 gap-3">
-                          {(['ETH', 'USDCX', 'USAD'] as const).map((t) => (
-                            <button key={t} onClick={() => updateForm({ tokenType: t })}
-                              className={cn('p-3 rounded-xl text-center transition-all', formData.tokenType === t ? 'bg-brand-400/[0.12] border border-brand-400/[0.2]' : 'bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.04]')}>
-                              <span className="text-lg font-semibold text-white block">{t}</span>
-                              <span className="text-2xs text-surface-400">{t === 'ETH' ? 'Native' : 'Stablecoin'}</span>
-                            </button>
-                          ))}
+                        <div className="p-3 rounded-xl bg-brand-400/[0.12] border border-brand-400/[0.2] text-center">
+                          <span className="text-lg font-semibold text-white block">ETH</span>
+                          <span className="text-2xs text-surface-400">Native</span>
                         </div>
                       </div>
                     </div>
@@ -655,7 +472,7 @@ export function CreateMarketPage() {
                         <label className="text-sm font-medium text-white mb-2 block">Initial Liquidity ({formData.tokenType}) *</label>
                         <div className="relative">
                           <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-500" />
-                          <input type="number" value={formData.initialLiquidity} onChange={(e) => updateForm({ initialLiquidity: e.target.value })} placeholder="10" min="1" className="input-field pl-10 text-lg font-semibold" />
+                          <input type="number" value={formData.initialLiquidity} onChange={(e) => updateForm({ initialLiquidity: e.target.value })} placeholder="0.01" min="0.01" step="0.01" className="input-field pl-10 text-lg font-semibold" />
                         </div>
                         <p className="text-2xs text-surface-500 mt-2">
                           Seeds the AMM pool. Split equally across outcomes.
@@ -720,7 +537,7 @@ export function CreateMarketPage() {
                     {isSlowTransaction && (
                       <div className="mt-4 p-3 rounded-lg bg-brand-400/[0.06] border border-brand-400/[0.1]">
                         <p className="text-sm text-brand-300">
-                          {wallet.walletType === 'shield' ? 'MetaMask is processing... This may take 30-60 seconds.' : 'Encrypting with FHE. This can take 30-60 seconds.'}
+                          Processing your transaction. This can take 30-60 seconds.
                         </p>
                       </div>
                     )}
@@ -735,13 +552,19 @@ export function CreateMarketPage() {
                     </motion.div>
                     <h3 className="text-2xl font-display font-bold text-white mb-2">Transaction Submitted!</h3>
                     <p className="text-surface-400 mb-6">Your market creation transaction has been sent to the network.</p>
-                    <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04] mb-4 text-left">
-                      <p className="text-2xs text-surface-500 uppercase tracking-wider mb-1">{marketId?.startsWith('at1') ? 'Transaction ID' : 'Wallet Request ID'}</p>
-                      <p className="text-sm text-white font-mono break-all">{marketId}</p>
-                      {marketId?.startsWith('at1') && (
-                        <a href={getTransactionUrl(marketId)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 mt-2">
-                          View on Explorer <ExternalLink className="w-3 h-3" />
-                        </a>
+                    <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04] mb-4 text-left space-y-3">
+                      <div>
+                        <p className="text-2xs text-surface-500 uppercase tracking-wider mb-1">Market ID</p>
+                        <p className="text-sm text-white font-mono break-all">{marketId}</p>
+                      </div>
+                      {txHash && (
+                        <div>
+                          <p className="text-2xs text-surface-500 uppercase tracking-wider mb-1">Transaction Hash</p>
+                          <p className="text-sm text-white font-mono break-all">{txHash}</p>
+                          <a href={`https://sepolia.etherscan.io/tx/${txHash}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 mt-2">
+                            View on Etherscan <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
                       )}
                     </div>
                     <div className="p-4 rounded-xl bg-brand-400/[0.06] border border-brand-400/[0.1] mb-6 text-left flex items-start gap-3">

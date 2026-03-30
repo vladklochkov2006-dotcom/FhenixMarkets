@@ -1,4 +1,4 @@
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   ArrowLeft,
   Activity,
@@ -18,7 +18,6 @@ import {
   Copy,
   Check,
   Droplets,
-  ShieldAlert,
   Shield,
   Coins,
   ShoppingCart,
@@ -29,29 +28,40 @@ import {
 } from 'lucide-react'
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useWalletStore, useBetsStore, type Market, CONTRACT_INFO, outcomeToString } from '@/lib/store'
-import { config } from '@/lib/config'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
+import { useWalletStore, useBetsStore, type Market, outcomeToString } from '@/lib/store'
 import { useRealMarketsStore } from '@/lib/market-store'
 import {
-  buildBuySharesInputs,
-  buildSellSharesInputs,
-  buildMerkleProofsForAddress,
-  getCurrentBlockHeight,
-  getMarketResolution,
-  getMarketFees,
-  getMarketDispute,
-  getProgramIdForToken,
-  diagnoseTransaction,
+  buyShares as contractBuyShares,
+  sellShares as contractSellShares,
+  parseContractError,
+  ensureSepoliaNetwork,
   MARKET_STATUS,
-  type MarketResolutionData,
-  type MarketFeesData,
-  type DisputeDataResult,
-} from '@/lib/aleo-client'
+  FHENIX_MARKETS_ADDRESS,
+} from '@/lib/contracts'
+
+// Compatibility types for resolution/fees/dispute
+type MarketResolutionData = { outcome: number; finalized: boolean; winning_outcome: number; challenge_deadline: bigint } | null
+type MarketFeesData = { creator_fees: bigint; protocol_fees: bigint } | null
+type DisputeDataResult = { disputed: boolean } | null
+
+// Stubs for Aleo-specific functions no longer needed
+const getCurrentBlockHeight = async (): Promise<bigint> => BigInt(Math.floor(Date.now() / 1000))
+const getMarketResolution = async (_id: string, _pid: string): Promise<MarketResolutionData> => null
+const getMarketFees = async (_id: string, _pid: string): Promise<MarketFeesData> => null
+const getMarketDispute = async (_id: string, _pid: string): Promise<DisputeDataResult> => null
+const getProgramIdForToken = (_t: string) => 'FhenixMarkets'
 import { OddsChart } from '@/components/OddsChart'
 import { CryptoPriceChart } from '@/components/CryptoPriceChart'
 // fetchCreditsRecord dynamically imported where needed for buy_shares_private
-import type { ParsedOutcomeShare } from '@/lib/credits-record'
+
+/** Inline type – originally from deleted credits-record.ts */
+interface ParsedOutcomeShare {
+  plaintext: string
+  outcome: number
+  quantity: bigint
+  marketId: string | null
+  owner: string | null
+}
 import {
   calculateBuySharesOut,
   calculateBuyPriceImpact,
@@ -72,7 +82,7 @@ import { LiquidityPanel } from '@/components/LiquidityPanel'
 // DisputePanel removed in v33 — challenge integrated in ResolvePanel
 import { CreatorFeesPanel } from '@/components/CreatorFeesPanel'
 import { ResolvePanel } from '@/components/ResolvePanel'
-import { cn, formatCredits, getTokenSymbol, sanitizeUrl, safeHostname, isValidAleoAddress } from '@/lib/utils'
+import { cn, formatCredits, getTokenSymbol, isValidAddress } from '@/lib/utils'
 import { getMarketThumbnail, isContainThumbnail } from '@/lib/market-thumbnails'
 import { useLiveCountdown } from '@/hooks/useGlobalTicker'
 import { fetchBetCountByMarket } from '@/lib/supabase'
@@ -144,30 +154,6 @@ function CopyableText({ text, displayText }: { text: string; displayText?: strin
 function MarketStatusBadgeWrapper({ status }: { status: number }) {
   const variant = getStatusVariant(status, false)
   return <StatusBadge variant={variant} size="md" />
-}
-
-const DESC_LIMIT = 150
-
-function ExpandableDescription({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false)
-  const needsTruncation = text.length > DESC_LIMIT
-
-  return (
-    <div className="mb-6">
-      <p className="text-surface-400">
-        {expanded || !needsTruncation ? text : `${text.slice(0, DESC_LIMIT)}...`}
-      </p>
-      {needsTruncation && (
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-brand-400 hover:text-brand-300 text-sm mt-1 flex items-center gap-1 transition-colors"
-        >
-          {expanded ? 'Show less' : 'Show more'}
-          <ChevronDown className={cn('w-3.5 h-3.5 transition-transform', expanded && 'rotate-180')} />
-        </button>
-      )}
-    </div>
-  )
 }
 
 // ── Hero Description with Read More ──
@@ -279,9 +265,9 @@ export function MarketDetail() {
   const navigate = useNavigate()
   const { marketId } = useParams<{ marketId: string }>()
   const { wallet } = useWalletStore()
-  const { addPendingBet, confirmPendingBet, removePendingBet } = useBetsStore()
+  const { addPendingBet, confirmPendingBet } = useBetsStore()
   const { markets, fetchMarkets, isLoading: marketsLoading } = useRealMarketsStore()
-  const { executeTransaction, pollTransactionStatus } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const [market, setMarket] = useState<Market | null>(null)
   const [selectedOutcome, setSelectedOutcome] = useState<number | null>(null)
@@ -365,29 +351,29 @@ export function MarketDetail() {
     fetchBetCountByMarket(market.id).then(setBetCount)
   }, [market?.id])
 
-  // Fetch created timestamp from explorer API
+  // Fetch created timestamp from Etherscan API
   useEffect(() => {
     if (!market?.transactionId) return
     const txId = market.transactionId
-    if (!txId.startsWith('at1')) {
+    if (!txId.startsWith('0x')) {
       setCreatedTimestamp(null)
       return
     }
     const fetchTimestamp = async () => {
       try {
-        // Step 1: Find block hash from transaction ID
-        const hashResp = await fetch(`${config.rpcUrl}/find/blockHash/${txId}`)
-        if (!hashResp.ok) return
-        const blockHash = (await hashResp.json()) as string
-        if (!blockHash || typeof blockHash !== 'string') return
+        // Use Etherscan API to get block timestamp
+        const resp = await fetch(`https://api-sepolia.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash=${txId}`)
+        if (!resp.ok) return
+        const data = await resp.json()
+        const blockNumber = data?.result?.blockNumber
+        if (!blockNumber) return
 
-        // Step 2: Get block by hash → read timestamp from metadata
-        const blockResp = await fetch(`${config.rpcUrl}/block/${blockHash.replace(/"/g, '')}`)
+        const blockResp = await fetch(`https://api-sepolia.etherscan.io/api?module=proxy&action=eth_getBlockByNumber&tag=${blockNumber}&boolean=false`)
         if (!blockResp.ok) return
-        const block = await blockResp.json()
-        const ts = block?.header?.metadata?.timestamp
-        if (ts && typeof ts === 'number') {
-          const date = new Date(ts * 1000)
+        const blockData = await blockResp.json()
+        const ts = blockData?.result?.timestamp
+        if (ts) {
+          const date = new Date(parseInt(ts, 16) * 1000)
           setCreatedTimestamp(date.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))
         }
       } catch { /* silent */ }
@@ -401,7 +387,7 @@ export function MarketDetail() {
     const fetchExtras = async () => {
       try {
         const tokenType = market.tokenType || 'ETH'
-        const pid = getProgramIdForToken(tokenType as 'ETH' | 'USDCX' | 'USAD')
+        const pid = getProgramIdForToken(tokenType as 'ETH')
         const [res, feesData, disputeData] = await Promise.all([
           getMarketResolution(market.id, pid),
           getMarketFees(market.id, pid),
@@ -461,23 +447,24 @@ export function MarketDetail() {
   }, [reserves])
 
   // Trade preview calculations
-  const buyAmountMicro = useMemo(() => {
+  const buyAmountWei = useMemo(() => {
     const num = parseFloat(buyAmount) || 0
-    return BigInt(Math.floor(num * 1_000_000))
+    if (num <= 0) return 0n
+    return BigInt(Math.floor(num * 1e18))
   }, [buyAmount])
 
   const tradePreview = useMemo(() => {
-    if (!reserves || !selectedOutcome || buyAmountMicro <= 0n) {
+    if (!reserves || !selectedOutcome || buyAmountWei <= 0n) {
       return null
     }
 
-    const sharesOut = calculateBuySharesOut(reserves, selectedOutcome, buyAmountMicro)
+    const sharesOut = calculateBuySharesOut(reserves, selectedOutcome, buyAmountWei)
     const minShares = calculateMinSharesOut(sharesOut, slippage)
-    const priceImpact = calculateBuyPriceImpact(reserves, selectedOutcome, buyAmountMicro)
-    const feeBreakdown = calculateFees(buyAmountMicro)
+    const priceImpact = calculateBuyPriceImpact(reserves, selectedOutcome, buyAmountWei)
+    const feeBreakdown = calculateFees(buyAmountWei)
 
     // Potential payout: winning shares redeem 1:1 (use minShares — matches on-chain record quantity)
-    const potentialPayout = Number(minShares) / 1_000_000
+    const potentialPayout = Number(minShares) / 1e18
 
     return {
       sharesOut,
@@ -486,14 +473,14 @@ export function MarketDetail() {
       fees: feeBreakdown,
       potentialPayout,
     }
-  }, [reserves, selectedOutcome, buyAmountMicro, slippage])
+  }, [reserves, selectedOutcome, buyAmountWei, slippage])
 
   // ---- Sell computed values ----
   const parsedShareRecord = useMemo(() => {
     if (!sellShareRecord) return null
     const outcomeMatch = sellShareRecord.match(/outcome:\s*(\d+)u8/)
     const qtyMatch = sellShareRecord.match(/quantity:\s*(\d+)u128/)
-    const marketMatch = sellShareRecord.match(/market_id:\s*(\d+field)/)
+    const marketMatch = sellShareRecord.match(/market_id:\s*(0x[0-9a-fA-F]+)/)
     if (!outcomeMatch || !qtyMatch) return null
     return {
       outcome: parseInt(outcomeMatch[1]),
@@ -507,19 +494,20 @@ export function MarketDetail() {
     return calculateMaxTokensDesired(reserves, parsedShareRecord.outcome, parsedShareRecord.quantity)
   }, [reserves, parsedShareRecord])
 
-  const sellTokensMicro = useMemo(() => {
+  const sellTokensWei = useMemo(() => {
     const num = parseFloat(sellTokensDesired) || 0
-    return BigInt(Math.floor(num * 1_000_000))
+    if (num <= 0) return 0n
+    return BigInt(Math.floor(num * 1e18))
   }, [sellTokensDesired])
 
   const sellPreview = useMemo(() => {
-    if (!reserves || !parsedShareRecord || sellTokensMicro <= 0n) return null
-    const sharesNeeded = calculateSellSharesNeeded(reserves, parsedShareRecord.outcome, sellTokensMicro)
+    if (!reserves || !parsedShareRecord || sellTokensWei <= 0n) return null
+    const sharesNeeded = calculateSellSharesNeeded(reserves, parsedShareRecord.outcome, sellTokensWei)
     if (sharesNeeded <= 0n) return null
     const maxSharesUsed = (sharesNeeded * BigInt(Math.floor((100 + sellSlippage) * 100))) / 10000n
-    const netTokens = calculateSellNetTokens(sellTokensMicro)
-    const fees = calculateFees(sellTokensMicro)
-    const priceImpact = calculateSellPriceImpact(reserves, parsedShareRecord.outcome, sellTokensMicro)
+    const netTokens = calculateSellNetTokens(sellTokensWei)
+    const fees = calculateFees(sellTokensWei)
+    const priceImpact = calculateSellPriceImpact(reserves, parsedShareRecord.outcome, sellTokensWei)
     return {
       sharesNeeded,
       maxSharesUsed,
@@ -528,78 +516,55 @@ export function MarketDetail() {
       priceImpact,
       exceedsBalance: maxSharesUsed > parsedShareRecord.quantity,
     }
-  }, [reserves, parsedShareRecord, sellTokensMicro, sellSlippage])
+  }, [reserves, parsedShareRecord, sellTokensWei, sellSlippage])
 
   // Sell handler
   const handleSellShares = async () => {
-    if (!market || !parsedShareRecord || sellTokensMicro <= 0n || !sellPreview) return
+    if (!market || !parsedShareRecord || sellTokensWei <= 0n || !sellPreview) return
 
     setSellStep('processing')
     setSellError(null)
 
     try {
+      await ensureSepoliaNetwork()
+
       if (sellPreview.exceedsBalance) {
         throw new Error(
           `Need ${formatCredits(sellPreview.maxSharesUsed)} shares (with ${sellSlippage}% slippage) but only have ${formatCredits(parsedShareRecord.quantity)}.`
         )
       }
 
-      const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-      const { functionName, inputs, programId: sellProgramId } = buildSellSharesInputs(
-        sellShareRecord,
-        sellTokensMicro,
+      const receipt = await contractSellShares(
+        market.id,
+        parsedShareRecord.outcome,
         sellPreview.maxSharesUsed,
-        tokenType,
+        sellTokensWei, // minTokensOut
       )
 
-      const result = await executeTransaction({
-        program: sellProgramId,
-        function: functionName,
-        inputs,
-        fee: 1.5,
+      const txHash = receipt.hash
+
+      // Record sell in My Bets
+      const outcomeStr = outcomeToString(parsedShareRecord.outcome)
+      addPendingBet({
+        id: txHash,
+        marketId: market.id,
+        amount: sellTokensWei,
+        outcome: outcomeStr,
+        placedAt: Date.now(),
+        status: 'pending',
+        type: 'sell',
+        marketQuestion: market.question,
+        sharesSold: sellPreview.maxSharesUsed,
+        tokensReceived: sellPreview.netTokens,
+        tokenType: market.tokenType || 'ETH',
       })
 
-      if (result?.transactionId) {
-        setSellTxId(result.transactionId)
-        setSellStep('pending')
-
-        // Record sell in My Bets
-        const outcomeStr = outcomeToString(parsedShareRecord.outcome)
-        addPendingBet({
-          id: result.transactionId,
-          marketId: market.id,
-          amount: sellTokensMicro,
-          outcome: outcomeStr,
-          placedAt: Date.now(),
-          status: 'pending',
-          type: 'sell',
-          marketQuestion: market.question,
-          sharesSold: sellPreview.maxSharesUsed,
-          tokensReceived: sellPreview.netTokens,
-          tokenType: market.tokenType || 'ETH',
-        })
-
-        const sellTxId = result.transactionId
-        pollTransactionStatus(sellTxId, async (status, onChainTxId) => {
-          if (onChainTxId) setSellTxId(onChainTxId)
-          if (status === 'confirmed') {
-            confirmPendingBet(sellTxId, onChainTxId)
-            setSellStep('success')
-          } else if (status === 'failed') {
-            removePendingBet(sellTxId)
-            setSellError('Transaction failed on-chain.')
-            setSellStep('error')
-          } else {
-            devWarn('[Sell] Transaction status still unknown, keeping sell pending:', sellTxId)
-            setSellStep('pending')
-          }
-        }, 30, 10_000)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      confirmPendingBet(txHash, txHash)
+      setSellTxId(txHash)
+      setSellStep('success')
     } catch (err: unknown) {
       console.error('Sell failed:', err)
-      setSellError(err instanceof Error ? err.message : 'Failed to sell shares')
+      setSellError(parseContractError(err))
       setSellStep('error')
     }
   }
@@ -619,15 +584,10 @@ export function MarketDetail() {
     setIsFetchingRecords(true)
     setFetchRecordError(null)
     try {
-      const { fetchOutcomeShareRecords } = await import('@/lib/credits-record')
-      // Use correct program ID based on market token type
-      const tokenType = market?.tokenType || 'ETH'
-      const programId = getProgramIdForToken(tokenType as 'ETH' | 'USDCX' | 'USAD')
-      const records = await fetchOutcomeShareRecords(programId, market?.id)
-      setWalletShareRecords(records)
-      if (records.length === 0) {
-        setFetchRecordError('No share positions found for this market. Your wallet may not support record fetching.')
-      }
+      // On Ethereum/Fhenix, share balances are encrypted in the contract (euint128).
+      // No client-side record fetching — positions are tracked via tx receipts.
+      setWalletShareRecords([])
+      setFetchRecordError('Share positions are encrypted on-chain via FHE. Use your bet history to track positions.')
     } catch (err) {
       console.error('[Sell] Failed to fetch records:', err)
       setFetchRecordError(err instanceof Error ? err.message : 'Failed to fetch records from wallet')
@@ -726,213 +686,54 @@ export function MarketDetail() {
   }
 
   const tokenSymbol = getTokenSymbol(market.tokenType)
-  const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-  const isUsdcx = tokenType === 'USDCX'
-  const isStablecoin = tokenType === 'USDCX' || tokenType === 'USAD'
+  void (market.tokenType) // tokenType reserved for multi-token support
   const numOutcomes = market.numOutcomes ?? 2
   const outcomeLabels = market.outcomeLabels ?? (numOutcomes === 2 ? ['Yes', 'No'] : Array.from({ length: numOutcomes }, (_, i) => `Outcome ${i + 1}`))
 
   // Buy shares via wallet
   const handleBuyShares = async () => {
-    if (!market || !selectedOutcome || buyAmountMicro <= 0n || isExpired || !tradePreview) return
+    if (!market || !selectedOutcome || buyAmountWei <= 0n || isExpired || !tradePreview) return
 
     setStep('processing')
     setError(null)
 
     try {
-      if (!market.id.endsWith('field')) {
-        throw new Error('This market cannot accept trades yet. The market ID must be in blockchain field format.')
-      }
+      await ensureSepoliaNetwork()
 
-      // Pre-flight: Verify market deadline
-      let currentBlock: bigint
-      try {
-        currentBlock = await getCurrentBlockHeight()
-      } catch {
-        throw new Error('Cannot verify market deadline - network error fetching block height.')
-      }
-      if (market.deadline > 0n && currentBlock > market.deadline) {
-        throw new Error(`Market trading deadline has passed (current block: ${currentBlock}, deadline: ${market.deadline}).`)
-      }
-
-      // Pre-flight: Verify market status is ACTIVE
+      // Pre-flight: Verify market status is OPEN
       if (market.status !== 1) {
         const statusNames: Record<number, string> = { 2: 'Closed', 3: 'Resolved', 4: 'Cancelled', 5: 'Pending Resolution' }
         throw new Error(`Market is ${statusNames[market.status] || 'not active'} (status: ${market.status}).`)
       }
 
-      // Pre-flight: Minimum trade amount
-      if (buyAmountMicro < 1000n) {
-        throw new Error('Minimum trade amount is 0.001 tokens (1000 wei).')
-      }
+      const receipt = await contractBuyShares(
+        market.id,
+        selectedOutcome,
+        tradePreview.minShares,
+        buyAmountWei,
+      )
 
-      // Pre-flight: Balance verification
-      const feeInMicro = 1_500_000n
-      if (!wallet.isDemoMode && wallet.balance.public < feeInMicro) {
-        throw new Error('Insufficient public ETH for transaction fee. Gas fees are always paid in public ETH.')
-      }
+      const submittedTxId = receipt.hash
 
-      if (isStablecoin) {
-        const totalStablecoin = tokenType === 'USDCX'
-          ? wallet.balance.usdcxPublic + wallet.balance.usdcxPrivate
-          : wallet.balance.usadPublic + wallet.balance.usadPrivate
-        if (buyAmountMicro > totalStablecoin) {
-          throw new Error(`Insufficient ${tokenType} balance. You need ${buyAmount} ${tokenType} but only have ${(Number(totalStablecoin) / 1_000_000).toFixed(2)} ${tokenType}.`)
-        }
-      }
+      addPendingBet({
+        id: submittedTxId,
+        marketId: market.id,
+        amount: buyAmountWei,
+        outcome: outcomeToString(selectedOutcome ?? 1),
+        placedAt: Date.now(),
+        status: 'pending',
+        marketQuestion: market.question,
+        sharesReceived: tradePreview.minShares,
+        lockedMultiplier: tradePreview.potentialPayout / (Number(buyAmountWei) / 1e18),
+        tokenType: market.tokenType || 'ETH',
+      })
 
-      // Build inputs
-      let functionName: string
-      let inputs: string[]
-      let releaseSelectedRecord: (() => void) | null = null
-
-      {
-        // expectedShares = minShares (conservative) so record quantity <= actual shares_out
-        const expectedShares = tradePreview.minShares
-        let creditsRecord: string | undefined
-
-        if (tokenType === 'ETH') {
-          // ETH: buy_shares_private needs credits record
-          const { fetchCreditsRecord, reserveCreditsRecord, releaseCreditsRecord } = await import('@/lib/credits-record')
-          const totalNeeded = Number(buyAmountMicro)
-          const record = await fetchCreditsRecord(totalNeeded, wallet.address)
-          if (!record) {
-            throw new Error(
-              `Could not find a Credits record with at least ${(totalNeeded / 1_000_000).toFixed(2)} ETH. ` +
-              `Private betting requires an unspent Credits record.`
-            )
-          }
-          reserveCreditsRecord(record)
-          releaseSelectedRecord = () => releaseCreditsRecord(record)
-          creditsRecord = record
-        }
-
-        const result = buildBuySharesInputs(
-          market.id,
-          selectedOutcome,
-          buyAmountMicro,
-          expectedShares,
-          tradePreview.minShares,
-          tokenType as 'ETH' | 'USDCX' | 'USAD',
-          creditsRecord,
-        )
-        functionName = result.functionName
-        inputs = result.inputs
-
-        // v29: USDCX private buy — append Token record + MerkleProof to inputs
-        if (tokenType === 'USDCX') {
-          const { findTokenRecord, reserveTokenRecord, releaseTokenRecord } = await import('@/lib/private-stablecoin')
-          const tokenRecord = await findTokenRecord('USDCX', buyAmountMicro)
-          if (tokenRecord) {
-            if (!wallet.address) {
-              throw new Error('Wallet address is unavailable. Please reconnect your wallet and try again.')
-            }
-            reserveTokenRecord('USDCX', tokenRecord)
-            releaseSelectedRecord = () => releaseTokenRecord('USDCX', tokenRecord)
-            inputs.push(tokenRecord)
-            inputs.push(await buildMerkleProofsForAddress(wallet.address))
-            devWarn('[Trade] USDCX PRIVATE buy — Token record + MerkleProof appended')
-          } else {
-            throw new Error(
-              `No private USDCX Token record found with at least ${Number(buyAmountMicro) / 1_000_000} USDCX. ` +
-              `Private betting requires USDCX Token records in your wallet.`
-            )
-          }
-        }
-
-        // USAD v8: private buy — append Token record + MerkleProof (same as USDCX)
-        if (tokenType === 'USAD') {
-          const { findTokenRecord, reserveTokenRecord, releaseTokenRecord } = await import('@/lib/private-stablecoin')
-          const tokenRecord = await findTokenRecord('USAD', buyAmountMicro)
-          if (tokenRecord) {
-            if (!wallet.address) {
-              throw new Error('Wallet address is unavailable. Please reconnect your wallet and try again.')
-            }
-            reserveTokenRecord('USAD', tokenRecord)
-            releaseSelectedRecord = () => releaseTokenRecord('USAD', tokenRecord)
-            inputs.push(tokenRecord)
-            inputs.push(await buildMerkleProofsForAddress(wallet.address))
-            devWarn('[Trade] USAD PRIVATE buy — Token record + MerkleProof appended')
-          } else {
-            throw new Error(
-              `No private USAD Token record found with at least ${Number(buyAmountMicro) / 1_000_000} USAD. ` +
-              `Please unshield USAD in MetaMask first.`
-            )
-          }
-        }
-      }
-
-      devWarn('[Trade] Submitting:', { function: functionName, inputs: inputs.map((i, idx) => idx >= 6 ? `[${i.length} chars]` : i) })
-
-      let result: any
-      {
-        // v7: Single TX — all bet inputs private, USAD uses transfer_public_as_signer
-        const programId = getProgramIdForToken(tokenType)
-        result = await executeTransaction({
-          program: programId,
-          function: functionName,
-          inputs,
-          fee: 1.5,
-          recordIndices: [6],
-        })
-      }
-
-      if (result?.transactionId) {
-        const submittedTxId = result.transactionId
-
-        addPendingBet({
-          id: submittedTxId,
-          marketId: market.id,
-          amount: buyAmountMicro,
-          outcome: outcomeToString(selectedOutcome ?? 1),
-          placedAt: Date.now(),
-          status: 'pending',
-          marketQuestion: market.question,
-          sharesReceived: tradePreview.minShares,  // matches on-chain OutcomeShare.quantity (= expected_shares)
-          lockedMultiplier: tradePreview.potentialPayout / (Number(buyAmountMicro) / 1_000_000),
-          tokenType: market.tokenType || 'ETH',
-        })
-
-        setTxId(result.transactionId)
-        setStep('pending')
-
-        pollTransactionStatus(submittedTxId, async (status, onChainTxId) => {
-          if (onChainTxId) setTxId(onChainTxId)
-
-          if (status === 'confirmed') {
-            confirmPendingBet(submittedTxId, onChainTxId)
-            setStep('success')
-          } else if (status === 'failed') {
-            removePendingBet(submittedTxId)
-            let diagMsg = 'Transaction failed.'
-            try {
-              let txDiagnosis: { found: boolean; status: string; message?: string } | null = null
-              if (onChainTxId) {
-                try { txDiagnosis = await diagnoseTransaction(onChainTxId) } catch {}
-              }
-              const txNote = onChainTxId ? `\n\nTransaction: ${onChainTxId}` : ''
-              if (onChainTxId && txDiagnosis) {
-                diagMsg = `Transaction was ${txDiagnosis.status === 'rejected' ? 'REJECTED (finalize aborted)' : 'failed'}.${txNote}`
-              } else {
-                diagMsg = 'Wallet could not complete this transaction. Please try again.' + txNote
-              }
-            } catch {
-              diagMsg = 'Transaction failed. Could not diagnose the exact cause.'
-            }
-            setError(diagMsg)
-            setStep('error')
-          } else {
-            devWarn('[Trade] Transaction status still unknown, keeping buy pending:', submittedTxId)
-            setStep('pending')
-          }
-        }, 30, 10_000)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      confirmPendingBet(submittedTxId, submittedTxId)
+      setTxId(submittedTxId)
+      setStep('success')
     } catch (err: unknown) {
-      releaseSelectedRecord?.()
       console.error('Trade failed:', err)
-      setError(err instanceof Error ? err.message : 'Failed to buy shares')
+      setError(parseContractError(err))
       setStep('error')
     }
   }
@@ -948,10 +749,10 @@ export function MarketDetail() {
   const quickAmounts = [1, 5, 10, 25, 50, 100]
 
   // Determine which panels to show based on market status
-  const showResolve = isExpired || market.status === MARKET_STATUS.CLOSED || market.status === MARKET_STATUS.PENDING_RESOLUTION || market.status === MARKET_STATUS.RESOLVED
+  const showResolve = isExpired || market.status === MARKET_STATUS.CLOSED || market.status === MARKET_STATUS.CLOSED || market.status === MARKET_STATUS.RESOLVED
   // v33: showDispute removed — challenge is in ResolvePanel
   const showCreatorFees = market.status === MARKET_STATUS.RESOLVED && fees && wallet.address === market.creator
-  const canTrade = market.status === MARKET_STATUS.ACTIVE && !isExpired
+  const canTrade = market.status === MARKET_STATUS.OPEN && !isExpired
   // v33: Show liquidity tab for ALL statuses — LP needs to see positions and withdraw
   const showLiquidity = true
 
@@ -962,7 +763,7 @@ export function MarketDetail() {
       // Refresh markets to get updated status (e.g. ACTIVE → CLOSED)
       await fetchMarkets()
       const tt = market.tokenType || 'ETH'
-      const programId = getProgramIdForToken(tt as 'ETH' | 'USDCX' | 'USAD')
+      const programId = getProgramIdForToken(tt as 'ETH')
       const [res, feesData, disputeData] = await Promise.all([
         getMarketResolution(market.id, programId),
         getMarketFees(market.id, programId),
@@ -1222,7 +1023,7 @@ export function MarketDetail() {
                         const hasVolume = market.totalVolume > 0n
                         const totalTraders = Math.max(betCount, market.totalBets || 0)
                         const otherTraders = Math.max(0, totalTraders - marketBets.length)
-                        const volumeDisplay = (Number(market.totalVolume) / 1_000_000).toFixed(1)
+                        const volumeDisplay = (Number(market.totalVolume) / 1e18).toFixed(1)
 
                         return (
                           <>
@@ -1234,8 +1035,8 @@ export function MarketDetail() {
                                   const isYes = bet.outcome === 'yes' || bet.outcome === 'outcome_1'
                                   const label = outcomeLabels[(bet.outcome === 'yes' ? 0 : bet.outcome === 'no' ? 1 : parseInt(bet.outcome.replace('outcome_', '')) - 1)] || bet.outcome.toUpperCase()
                                   const isSell = bet.type === 'sell'
-                                  const amount = Number(bet.amount) / 1_000_000
-                                  const shares = bet.sharesReceived ? Number(bet.sharesReceived) / 1_000_000 : amount
+                                  const amount = Number(bet.amount) / 1e18
+                                  const shares = bet.sharesReceived ? Number(bet.sharesReceived) / 1e18 : amount
 
                                   return (
                                     <motion.div key={bet.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
@@ -1344,9 +1145,9 @@ export function MarketDetail() {
                           </div>
                           <div className="flex items-center justify-between text-sm">
                             <span className="text-surface-400">Contract</span>
-                            <a href={`https://testnet.explorer.provable.com/program/${CONTRACT_INFO.programId}`} target="_blank" rel="noopener noreferrer"
+                            <a href={`https://sepolia.etherscan.io/address/${FHENIX_MARKETS_ADDRESS}`} target="_blank" rel="noopener noreferrer"
                               className="text-brand-400 hover:text-brand-300 flex items-center gap-1 text-xs">
-                              {CONTRACT_INFO.programId} <ExternalLink className="w-3 h-3" />
+                              {FHENIX_MARKETS_ADDRESS} <ExternalLink className="w-3 h-3" />
                             </a>
                           </div>
                         </div>
@@ -1527,10 +1328,10 @@ export function MarketDetail() {
                     <p className="text-surface-400 mb-4">
                       You bought {outcomeLabels[(selectedOutcome ?? 1) - 1]} shares with {buyAmount} {tokenSymbol}.
                     </p>
-                    {txId && txId.startsWith('at1') ? (
+                    {txId && txId.startsWith('0x') ? (
                       <>
                         <a
-                          href={`https://testnet.explorer.provable.com/transaction/${txId}`}
+                          href={`https://sepolia.etherscan.io/tx/${txId}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-2 text-brand-400 hover:text-brand-300 mb-2"
@@ -1671,10 +1472,7 @@ export function MarketDetail() {
                             </div>
                           )}
                           <p className="text-xs text-surface-500">
-                            {isStablecoin
-                              ? `${tokenType} Balance: ${formatCredits(tokenType === 'USDCX' ? wallet.balance.usdcxPublic + wallet.balance.usdcxPrivate : wallet.balance.usadPublic + wallet.balance.usadPrivate)} ${tokenType}`
-                              : <>Public Balance: {formatCredits(wallet.balance.public)} ETH</>
-                            }
+                            <>Public Balance: {formatCredits(wallet.balance.public)} ETH</>
                           </p>
                           <Tooltip content="Gas fee paid to Fhenix network validators for processing your transaction" side="bottom">
                             <p className="text-xs text-surface-600 cursor-help w-fit">
@@ -1738,16 +1536,16 @@ export function MarketDetail() {
                     {/* Buy Shares Button */}
                     <button
                       onClick={handleBuyShares}
-                      disabled={!selectedOutcome || buyAmountMicro <= 0n}
+                      disabled={!selectedOutcome || buyAmountWei <= 0n}
                       className={cn(
                         "w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2",
-                        selectedOutcome && buyAmountMicro > 0n
+                        selectedOutcome && buyAmountWei > 0n
                           ? "bg-brand-400 hover:bg-brand-300 text-white active:scale-[0.98]"
                           : "bg-white/[0.04] text-surface-500 cursor-not-allowed"
                       )}
                     >
                       <ShoppingCart className="w-5 h-5" />
-                      {selectedOutcome && buyAmountMicro > 0n ? (
+                      {selectedOutcome && buyAmountWei > 0n ? (
                         `Buy ${outcomeLabels[selectedOutcome - 1]} Shares`
                       ) : (
                         'Select Outcome & Amount'
@@ -1942,7 +1740,7 @@ export function MarketDetail() {
                               <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
                                 <button
                                   onClick={() => setSellTokensDesired(
-                                    (Number(sellMaxTokens) / 1_000_000).toString()
+                                    (Number(sellMaxTokens) / 1e18).toString()
                                   )}
                                   className="text-xs text-brand-400 hover:text-brand-300"
                                 >
@@ -2035,16 +1833,16 @@ export function MarketDetail() {
                         {/* Sell Button */}
                         <button
                           onClick={handleSellShares}
-                          disabled={!parsedShareRecord || sellTokensMicro <= 0n || sellPreview?.exceedsBalance}
+                          disabled={!parsedShareRecord || sellTokensWei <= 0n || sellPreview?.exceedsBalance}
                           className={cn(
                             "w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2",
-                            parsedShareRecord && sellTokensMicro > 0n && !sellPreview?.exceedsBalance
+                            parsedShareRecord && sellTokensWei > 0n && !sellPreview?.exceedsBalance
                               ? "bg-no-500 hover:bg-no-400 text-white"
                               : "bg-white/[0.04] text-surface-500 cursor-not-allowed"
                           )}
                         >
                           <TrendingDown className="w-5 h-5" />
-                          {parsedShareRecord && sellTokensMicro > 0n
+                          {parsedShareRecord && sellTokensWei > 0n
                             ? `Sell for ${sellTokensDesired} ${tokenSymbol}`
                             : 'Select Position & Enter Amount'}
                         </button>
@@ -2088,9 +1886,9 @@ export function MarketDetail() {
                         <p className="text-surface-400 mb-4">
                           You withdrew {sellTokensDesired} {tokenSymbol} from the pool.
                         </p>
-                        {sellTxId && sellTxId.startsWith('at1') && (
+                        {sellTxId && sellTxId.startsWith('0x') && (
                           <a
-                            href={`https://testnet.explorer.provable.com/transaction/${sellTxId}`}
+                            href={`https://sepolia.etherscan.io/tx/${sellTxId}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-2 text-brand-400 hover:text-brand-300 mb-4"
@@ -2133,7 +1931,7 @@ export function MarketDetail() {
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-surface-500">Created</span>
                     <span className="text-xs font-medium text-white tabular-nums">
-                      {createdTimestamp || (market.transactionId?.startsWith('at1') ? 'Fetching...' : 'On-chain')}
+                      {createdTimestamp || (market.transactionId?.startsWith('0x') ? 'Fetching...' : 'On-chain')}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
@@ -2150,8 +1948,8 @@ export function MarketDetail() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-surface-500">Creator</span>
-                    {isValidAleoAddress(market.creator) ? (
-                      <a href={`https://testnet.explorer.provable.com/address/${market.creator}`} target="_blank" rel="noopener noreferrer"
+                    {isValidAddress(market.creator) ? (
+                      <a href={`https://etherscan.io/address/${market.creator}`} target="_blank" rel="noopener noreferrer"
                         className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
                         {market.creator?.slice(0, 8)}...{market.creator?.slice(-4)} <ExternalLink className="w-3 h-3" />
                       </a>
@@ -2169,17 +1967,17 @@ export function MarketDetail() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-surface-500">Contract</span>
-                    <a href={`https://testnet.explorer.provable.com/program/${CONTRACT_INFO.programId}`} target="_blank" rel="noopener noreferrer"
+                    <a href={`https://sepolia.etherscan.io/address/${FHENIX_MARKETS_ADDRESS}`} target="_blank" rel="noopener noreferrer"
                       className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
-                      {CONTRACT_INFO.programId.slice(0, 12)}... <ExternalLink className="w-3 h-3" />
+                      {FHENIX_MARKETS_ADDRESS.slice(0, 12)}... <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
                 </div>
 
                 {/* Verify On-Chain */}
-                {market.transactionId && market.transactionId.startsWith('at1') && (
+                {market.transactionId && market.transactionId.startsWith('0x') && (
                   <a
-                    href={`${config.explorerUrl}/transaction/${market.transactionId}`}
+                    href={`https://sepolia.etherscan.io/tx/${market.transactionId}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="mt-4 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-brand-500/8 border border-brand-500/15 text-brand-400 hover:bg-brand-500/15 hover:border-brand-500/30 transition-all text-xs font-semibold"

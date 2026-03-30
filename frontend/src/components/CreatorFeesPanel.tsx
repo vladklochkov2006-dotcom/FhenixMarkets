@@ -1,19 +1,21 @@
 import { motion } from 'framer-motion'
 import { Coins, Loader2, Check, AlertCircle } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { type Market, useWalletStore } from '@/lib/store'
-import { useAleoTransaction } from '@/hooks/useAleoTransaction'
-import { cn, formatCredits, getTokenSymbol } from '@/lib/utils'
+import { cn, formatCredits } from '@/lib/utils'
 import {
-  buildWithdrawCreatorFeesInputs,
-  formatTimeRemaining,
-  getCurrentBlockHeight,
-  type MarketFeesData,
+  withdrawCreatorFees as contractWithdrawCreatorFees,
+  parseContractError,
+  ensureSepoliaNetwork,
   MARKET_STATUS,
-  getProgramIdForToken,
-  WINNER_CLAIM_PRIORITY_BLOCKS,
-} from '@/lib/aleo-client'
+} from '@/lib/contracts'
 import { TransactionLink } from './TransactionLink'
+
+// Compatibility type for fees prop
+interface MarketFeesData {
+  creator_fees: bigint
+  protocol_fees: bigint
+}
 
 interface CreatorFeesPanelProps {
   market: Market
@@ -22,58 +24,22 @@ interface CreatorFeesPanelProps {
 
 export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
   const { wallet } = useWalletStore()
-  const { executeTransaction } = useAleoTransaction()
+  // Contract calls via contracts.ts
 
   const [isWithdrawing, setIsWithdrawing] = useState(false)
   const [transactionId, setTransactionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [currentBlock, setCurrentBlock] = useState<bigint | null>(null)
 
-  const tokenSymbol = getTokenSymbol(market.tokenType)
+  const tokenSymbol = 'ETH'
   const isCreator = wallet.address === market.creator
   const isResolved = market.status === MARKET_STATUS.RESOLVED
-  const winnerClaimUnlockBlock = isResolved && market.challengeDeadline !== undefined
-    ? market.challengeDeadline + WINNER_CLAIM_PRIORITY_BLOCKS
-    : null
-  const winnerClaimWindowActive = isResolved
-    && (winnerClaimUnlockBlock === null || currentBlock === null || currentBlock <= winnerClaimUnlockBlock)
-  const winnerClaimTimeRemaining = winnerClaimUnlockBlock !== null && currentBlock !== null
-    ? formatTimeRemaining(winnerClaimUnlockBlock, currentBlock)
-    : null
+
+  // On Ethereum, winner claim window is not block-based; disable the concept
+  const winnerClaimWindowActive = false
+  const winnerClaimTimeRemaining: string | null = null
 
   // Creator can withdraw fees only after market is resolved and finalized
-  const canWithdraw = isCreator && isResolved && fees.creator_fees > 0n && !winnerClaimWindowActive
-
-  useEffect(() => {
-    if (!isResolved) {
-      setCurrentBlock(null)
-      return
-    }
-
-    let cancelled = false
-    const updateCurrentBlock = async () => {
-      try {
-        const height = await getCurrentBlockHeight()
-        if (!cancelled) {
-          setCurrentBlock(height)
-        }
-      } catch {
-        if (!cancelled) {
-          setCurrentBlock(null)
-        }
-      }
-    }
-
-    void updateCurrentBlock()
-    const intervalId = window.setInterval(() => {
-      void updateCurrentBlock()
-    }, 30_000)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-    }
-  }, [isResolved, market.id])
+  const canWithdraw = isCreator && isResolved && fees.creator_fees > 0n
 
   const handleWithdraw = async () => {
     if (!canWithdraw) return
@@ -82,36 +48,12 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
     setError(null)
 
     try {
-      if (winnerClaimWindowActive) {
-        throw new Error(
-          winnerClaimTimeRemaining
-            ? `Winner claims still have priority for about ${winnerClaimTimeRemaining}. Creator fees unlock after that window ends.`
-            : 'Winner claims still have priority. Creator fees are temporarily locked until the winner claim window ends.'
-        )
-      }
-
-      const tokenType = (market.tokenType || 'ETH') as 'ETH' | 'USDCX' | 'USAD'
-      const { functionName, inputs } = buildWithdrawCreatorFeesInputs(
-        market.id,
-        fees.creator_fees,
-        tokenType,
-      )
-
-      const result = await executeTransaction({
-        program: getProgramIdForToken(tokenType),
-        function: functionName,
-        inputs,
-        fee: 1.5,
-      })
-
-      if (result?.transactionId) {
-        setTransactionId(result.transactionId)
-      } else {
-        throw new Error('No transaction ID returned from wallet')
-      }
+      await ensureSepoliaNetwork()
+      const receipt = await contractWithdrawCreatorFees(market.id)
+      setTransactionId(receipt.hash)
     } catch (err: unknown) {
       console.error('Failed to withdraw creator fees:', err)
-      setError(err instanceof Error ? err.message : 'Failed to withdraw fees')
+      setError(parseContractError(err))
     } finally {
       setIsWithdrawing(false)
     }
@@ -159,7 +101,7 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
               'text-sm font-medium',
               isResolved ? 'text-yes-400' : 'text-brand-400'
             )}>
-              {isResolved ? 'Resolved' : market.status === MARKET_STATUS.ACTIVE ? 'Active' : 'Pending'}
+              {isResolved ? 'Resolved' : market.status === MARKET_STATUS.OPEN ? 'Active' : 'Pending'}
             </span>
           </div>
           <div className="flex justify-between items-center">

@@ -28,7 +28,7 @@ export function TradingPanel({ market, onTrade }: TradingPanelProps) {
 
     const amountBigInt = useMemo(() => {
         try {
-            return BigInt(Math.floor(parseFloat(amount || '0') * 1_000_000))
+            return BigInt(Math.floor(parseFloat(amount || '0') * 1e18))
         } catch {
             return 0n
         }
@@ -59,7 +59,7 @@ export function TradingPanel({ market, onTrade }: TradingPanelProps) {
                 sharesOut,
                 minSharesOut,
                 priceImpact,
-                avgPrice: avgPrice / 1_000_000,
+                avgPrice: avgPrice / 1e18,
                 fees,
                 total: amountBigInt + fees
             }
@@ -76,7 +76,7 @@ export function TradingPanel({ market, onTrade }: TradingPanelProps) {
                 creditsOut: netCredits,
                 minCreditsOut,
                 priceImpact,
-                avgPrice: avgPrice / 1_000_000,
+                avgPrice: avgPrice / 1e18,
                 fees,
                 total: netCredits
             }
@@ -196,7 +196,7 @@ export function TradingPanel({ market, onTrade }: TradingPanelProps) {
                         </span>
                         <span className="text-white font-medium">
                             {tradeType === 'buy'
-                                ? `${(Number(tradeDetails.sharesOut) / 1_000_000).toFixed(2)} shares`
+                                ? `${(Number(tradeDetails.sharesOut) / 1e18).toFixed(2)} shares`
                                 : `${formatCredits(tradeDetails.creditsOut || 0n)} ETH`
                             }
                         </span>

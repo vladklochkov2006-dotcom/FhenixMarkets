@@ -1,285 +1,250 @@
-# Veiled Markets
+# Fhenix Markets
 
 <div align="center">
 
-<img src="./logo-veiled-markets.png" alt="Veiled Markets Logo" width="200"/>
+### **Encrypted Bets. Total Privacy.**
 
-### **Predict Freely. Bet Privately.**
+Privacy-preserving prediction market protocol powered by Fully Homomorphic Encryption on Ethereum
 
-Privacy-preserving prediction market with FPMM AMM on Aleo blockchain
-
-[![Live Demo](https://img.shields.io/badge/Live-Demo-00D4AA?style=for-the-badge)](https://veiledmarkets.xyz)
-[![Aleo](https://img.shields.io/badge/Aleo-Testnet-00D4AA?style=for-the-badge)](https://testnet.explorer.provable.com/program/veiled_markets_v35.aleo)
+[![Live on Sepolia](https://img.shields.io/badge/Live-Sepolia_Testnet-0AD9DC?style=for-the-badge)](https://sepolia.etherscan.io/address/0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a)
+[![Fhenix CoFHE](https://img.shields.io/badge/FHE-Fhenix_CoFHE-8B5CF6?style=for-the-badge)](https://www.fhenix.io/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](./LICENSE)
 
 </div>
 
 ---
 
-## Overview
+## The Problem
 
-Veiled Markets is a prediction market protocol on Aleo where users trade outcome shares with **full privacy**. Uses a Gnosis-style **Fixed Product Market Maker (FPMM)** with complete-set minting/burning. All buy transactions are fully private — no one can see who bet on what, which outcome, or how much.
+Existing prediction markets (Polymarket, Augur, etc.) expose all trading activity on-chain. Anyone can see:
+- **Who** bet on what outcome
+- **How much** they wagered
+- **What position** they hold
 
-**Key Features:**
-- **Fully Private Trading** — All buy/sell/redeem use private records. Buy inputs (market, outcome, amount, shares) are ZK-encrypted on-chain
-- **Tri-Token Support** — Markets in **ALEO** (native), **USDCX**, or **USAD** stablecoins — all with private transfers
-- **Multi-Outcome Markets** — Support 2, 3, or 4 outcome markets (Yes/No, Multi-choice)
-- **FPMM AMM** — Constant product invariant with per-trade fees (0.5% protocol + 0.5% creator + 1% LP = 2% total)
-- **Multi-Voter Quorum Resolution** — Minimum 3 independent voters with ALEO bond, dispute window, slashing for wrong voters
-- **Dispute Mechanism** — Challenge voter majority with 3× bond. Disputer's outcome overrides if successful
-- **ALEO Staking Governance** — Proposals, voting, delegation, resolver registry via `veiled_governance_v4.aleo`
-- **Multi-Sig Treasury** — 3-of-N multisig for protocol fund withdrawals
-- **Encrypted Storage** — Supabase with AES-256-GCM client-side encryption for cross-device bet sync
-- **IPFS Metadata** — Market metadata stored on IPFS via Pinata
+This creates real problems: front-running, copy-trading, social pressure, and privacy violations for users betting on sensitive topics (elections, legal outcomes, corporate events).
 
-## Deployed Contracts
+## The Solution
 
-| Contract | Program ID | Transitions | Purpose |
-|----------|-----------|-------------|---------|
-| **Main** | [`veiled_markets_v35.aleo`](https://testnet.explorer.provable.com/program/veiled_markets_v35.aleo) | 22/31 | ALEO markets, Multi-Voter resolution, multisig treasury |
-| **USDCX** | [`veiled_markets_usdcx_v5.aleo`](https://testnet.explorer.provable.com/program/veiled_markets_usdcx_v5.aleo) | 22/31 | USDCX stablecoin markets (private Token + MerkleProof) |
-| **USAD** | [`veiled_markets_usad_v12.aleo`](https://testnet.explorer.provable.com/program/veiled_markets_usad_v12.aleo) | 22/31 | USAD stablecoin markets (private Token + MerkleProof) |
-| **Governance** | [`veiled_governance_v4.aleo`](https://testnet.explorer.provable.com/program/veiled_governance_v4.aleo) | 29/31 | Proposals, voting, delegation, resolver registry, treasury |
+Fhenix Markets uses **Fully Homomorphic Encryption (FHE)** via the Fhenix CoFHE coprocessor to encrypt user positions on-chain. The smart contract computes on encrypted data — share balances are never stored in plaintext.
 
-**Dependencies:** `credits.aleo`, `test_usdcx_stablecoin.aleo`, `test_usad_stablecoin.aleo`, `merkle_tree.aleo`
+### What's Private vs Public
 
-> **Architecture:** Each token type has its own market contract due to snarkVM's 31-transition limit. All three market contracts share identical structs, mappings, constants, and resolution logic. The frontend routes transactions automatically — users see a unified experience.
+| Data | Visibility | Why |
+|------|-----------|-----|
+| **Share balances** | **Encrypted** (`euint128`) | FHE — only owner can decrypt with permit |
+| **LP positions** | **Encrypted** (`euint128`) | FHE — private liquidity provision |
+| **Event logs** | **Minimal** | Events emit only `(marketId, address)` — no amounts, no outcomes |
+| Market questions, AMM reserves, prices | Public | Required for price discovery |
+| ETH value sent (`msg.value`) | Public | EVM limitation — ETH transfers are always visible |
 
-## Market Resolution: Multi-Voter Quorum + Dispute
-
-Unlike traditional prediction markets with single resolvers, Veiled Markets uses a **decentralized multi-voter quorum system**:
+### How FHE Works in This Protocol
 
 ```
-Market Deadline Passes → close_market → CLOSED
-        ↓
-Anyone: vote_outcome(outcome, 1 ALEO bond) → PENDING_RESOLUTION
-        ↓ (min 3 voters required)
-Anyone: finalize_votes() → tally winner → PENDING_FINALIZATION
-        ↓
-Dispute Window (12 hours / 2880 blocks)
-        ↓
-┌─── No dispute ───────────────────────────────────┐
-│ confirm_resolution() → RESOLVED                  │
-│ Winners: bond back + share of loser bonds         │
-│ Losers: bond SLASHED (forfeited)                  │
-│ Resolver reward: 20% of protocol fees             │
-└──────────────────────────────────────────────────┘
-        ↓ OR
-┌─── Dispute filed ────────────────────────────────┐
-│ dispute_resolution(different_outcome, 3× bond)   │
-│ → Override winning outcome → RESOLVED            │
-│ Disputer pays 3× total voter bonds as guarantee  │
-└──────────────────────────────────────────────────┘
+User calls buyShares(marketId, outcome, minSharesOut) + sends ETH
+                              ↓
+    Contract computes AMM math on public reserves (price discovery)
+                              ↓
+    Shares calculated → FHE.asEuint128(sharesOut) → encrypted
+                              ↓
+    encShareBalances[key] = FHE.add(current, encrypted_shares)
+                              ↓
+    Event emitted: SharesBought(marketId, buyer)  ← no amounts leaked
+                              ↓
+    CoFHE coprocessor handles encryption off-chain (TaskCreated event)
 ```
 
-**7 Resolution Transitions** (identical across all 3 market contracts):
+Nobody can call `balanceOf()` to see your position. Only you can decrypt via an FHE permit.
 
-| Transition | Function |
-|-----------|----------|
-| `vote_outcome` | Anyone votes with 1 ALEO bond (1 vote per address per market) |
-| `finalize_votes` | Tally votes (requires ≥3 voters + voting window passed) |
-| `confirm_resolution` | Finalize after dispute window (no dispute) |
-| `dispute_resolution` | Challenge with 3× total bonds — override outcome |
-| `claim_voter_bond` | Winners claim bond back; losers get nothing (slashed) |
-| `claim_dispute_bond` | Disputer claims bond back if their outcome won |
-| `claim_voter_reward` | Claim accumulated protocol fee rewards |
+## Smart Contracts
+
+Deployed on **Ethereum Sepolia** with Fhenix CoFHE coprocessor:
+
+| Contract | Address | Purpose |
+|----------|---------|---------|
+| **FhenixMarkets** | [`0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a`](https://sepolia.etherscan.io/address/0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a) | Markets, AMM, trading, resolution |
+| **FhenixGovernance** | [`0x3D323bF271E86F57d7FE2614535e969bb5A9AE36`](https://sepolia.etherscan.io/address/0x3D323bF271E86F57d7FE2614535e969bb5A9AE36) | DAO governance, resolver registry, slashing |
+
+### FhenixMarkets — Core Functions
+
+**Trading:**
+| Function | Description |
+|----------|-------------|
+| `createMarket` | Create market with question, outcomes (2-4), deadlines, initial ETH liquidity |
+| `buyShares` | Buy outcome shares via FPMM. Shares stored as `euint128` (encrypted) |
+| `sellShares` | Sell shares back to the pool. FHE.sub reverts on insufficient balance |
+| `addLiquidity` | Provide liquidity, receive encrypted LP shares |
+| `withdrawLiquidity` | Remove liquidity, burn LP shares |
+
+**Resolution (Multi-Voter Quorum + Dispute):**
+| Function | Description |
+|----------|-------------|
+| `voteOutcome` | Vote on market outcome with 0.001 ETH bond (min 3 voters required) |
+| `finalizeVotes` | Tally votes after voting window closes |
+| `confirmResolution` | Finalize after 12h dispute window if unchallenged |
+| `disputeResolution` | Challenge with 3x bond — override winning outcome |
+| `claimVoterBond` | Winners claim bond back; losers are slashed |
+
+**Redemption:**
+| Function | Description |
+|----------|-------------|
+| `redeemShares` | Winning shares redeem 1:1 against collateral |
+| `claimRefund` | Get refund if market was cancelled |
+| `withdrawCreatorFees` | Market creator withdraws accumulated fees |
+
+### FhenixGovernance — DAO Functions
+
+Proposals, voting, delegation, resolver registry, multi-resolver panels, slashing, and reward distribution. Uses FHE for encrypted vote weights.
+
+## FPMM (Fixed Product Market Maker)
+
+The AMM uses a Gnosis-style complete-set minting/burning model:
+
+| Operation | Formula |
+|-----------|---------|
+| **Buy** | `shares_out = (r_i + a) - r_i × ∏(r_k / (r_k + a))` for k ≠ i |
+| **Sell** | `shares_needed = r_i_new - r_i + pool_out` where `r_i_new = r_i × ∏(r_k / (r_k - p))` |
+| **Redeem** | Winning shares 1:1 against collateral |
+| **Fees** | 0.5% protocol + 0.5% creator + 1% LP = **2% total** |
+
+Supports 2, 3, or 4 outcome markets (Yes/No, multi-choice).
 
 ## Architecture
 
 ```
-┌──────────────────┐     ┌───────────────────────┐     ┌──────────────────────────────┐
-│   Frontend       │────▶│   Shield Wallet       │────▶│   Aleo Testnet                │
-│   React 18/Vite  │     │  (ProvableHQ adapter) │     │                              │
-│   TypeScript     │     │                       │     │  veiled_markets_v35.aleo      │
-│   Tailwind CSS   │     │  recordIndices hint   │     │  └─ ALEO markets (22 trans)   │
-│   Recharts       │     │  for Token records    │     │                              │
-│                  │     └───────────────────────┘     │  veiled_markets_usdcx_v5.aleo │
-│  Pages:          │                                   │  └─ USDCX markets (22 trans)  │
-│  - Landing       │     ┌───────────────────────┐     │                              │
-│  - Dashboard     │────▶│  Supabase (encrypted) │     │  veiled_markets_usad_v12.aleo │
-│  - MarketDetail  │     │  Bet sync + registry  │     │  └─ USAD markets (22 trans)   │
-│  - Portfolio     │     └───────────────────────┘     │                              │
-│  - Governance    │                                   │  veiled_governance_v4.aleo    │
-│  - Create Market │     ┌───────────────────────┐     │  └─ Governance (29 trans)     │
-│                  │────▶│  IPFS (Pinata)        │     │                              │
-│                  │     │  Market metadata      │     │  Dependencies:               │
-│                  │     └───────────────────────┘     │  ├─ credits.aleo             │
-│                  │                                   │  ├─ test_usdcx_stablecoin    │
-│                  │                                   │  ├─ test_usad_stablecoin     │
-│                  │                                   │  └─ merkle_tree.aleo         │
-└──────────────────┘                                   └──────────────────────────────┘
+┌──────────────────────┐     ┌───────────────────────┐
+│   Frontend           │────▶│   Privy Wallet         │
+│   React 18 / Vite    │     │   (EVM wallets)        │
+│   TypeScript          │     │                       │
+│   Tailwind CSS       │     └───────┬───────────────┘
+│                      │             │
+│  Pages:              │             ▼
+│  - Landing           │     ┌───────────────────────────────────┐
+│  - Dashboard         │     │   Ethereum Sepolia                │
+│  - Market Detail     │     │                                   │
+│  - Create Market     │     │   FhenixMarkets.sol               │
+│  - My Bets           │     │   ├─ FPMM AMM (public reserves)  │
+│  - Governance        │     │   ├─ encShareBalances (euint128)  │
+│                      │     │   ├─ encLPBalances (euint128)     │
+│                      │     │   └─ Multi-Voter Resolution       │
+└──────┬───────────────┘     │                                   │
+       │                     │   FhenixGovernance.sol             │
+       │                     │   └─ DAO + Resolver Registry      │
+       ▼                     │                                   │
+┌──────────────┐             │   CoFHE Coprocessor               │
+│  Supabase    │             │   └─ Off-chain FHE compute        │
+│  (encrypted) │             └───────────────────────────────────┘
+├──────────────┤
+│  IPFS/Pinata │
+│  (metadata)  │
+└──────────────┘
 ```
 
 ## Project Structure
 
 ```
-veiled-markets/
-├── contracts/              # Main Leo contract (ALEO only, 22 transitions)
-├── contracts-usdcx/        # USDCX Leo contract (22 transitions, private Token + MerkleProof)
-├── contracts-usad/         # USAD Leo contract (22 transitions, private Token + MerkleProof)
-├── contracts-governance/   # Governance contract (29 transitions)
-├── frontend/               # React dashboard + landing page
+fhenix-markets/
+├── contracts-fhenix/           # Solidity smart contracts
+│   ├── contracts/
+│   │   ├── FhenixMarkets.sol   # Core market + AMM + FHE balances
+│   │   └── FhenixGovernance.sol # DAO governance + resolver registry
+│   ├── scripts/deploy.ts       # Deployment script
+│   └── hardhat.config.ts
+├── frontend/                   # React application
 │   ├── src/
-│   │   ├── components/     # UI components
-│   │   ├── hooks/          # React hooks (transactions, governance, ticker)
-│   │   ├── lib/            # Business logic (aleo-client, AMM math, stores, crypto)
-│   │   ├── pages/          # Route pages (Dashboard, MarketDetail, Portfolio, etc.)
-│   │   ├── styles/         # Global CSS
-│   │   └── workers/        # Web workers (ZK prover, SDK)
+│   │   ├── components/         # UI components (modals, panels, cards)
+│   │   ├── hooks/              # React hooks (wallet, transactions)
+│   │   ├── lib/                # Core logic
+│   │   │   ├── contracts.ts    # Contract interaction layer
+│   │   │   ├── amm.ts          # FPMM math (matching on-chain formulas)
+│   │   │   ├── store.ts        # Zustand state management
+│   │   │   ├── market-store.ts # Market data fetching + caching
+│   │   │   ├── config.ts       # Environment configuration
+│   │   │   ├── supabase.ts     # Encrypted bet persistence
+│   │   │   ├── crypto.ts       # AES-256-GCM client-side encryption
+│   │   │   └── abis/           # Contract ABIs
+│   │   └── pages/              # Route pages
 │   └── public/
-├── backend/                # Blockchain indexer service
-├── sdk/                    # TypeScript SDK (@veiled-markets/sdk)
-├── supabase/               # Database schemas
-└── docs/                   # Architecture documentation
+└── supabase-schema.sql         # Database schema
 ```
-
-## Privacy Model
-
-All three token types achieve **full privacy** for trading operations:
-
-| Token | Buy Method | Privacy Level |
-|-------|-----------|---------------|
-| **ALEO** | `credits.aleo/transfer_private_to_public` | All inputs encrypted (ciphertext) |
-| **USDCX** | `test_usdcx_stablecoin.aleo/transfer_private_to_public` | Token record + MerkleProof (encrypted) |
-| **USAD** | `test_usad_stablecoin.aleo/transfer_private_to_public` | Token record + MerkleProof (encrypted) |
-
-### What's Hidden vs Visible
-
-| Data | Visibility |
-|------|-----------|
-| Market question, pool reserves, prices | Public (by design) |
-| **Buy: market, outcome, amount, shares** | **Private** (ZK-encrypted ciphertext) |
-| **Buy: wallet address** | **Private** (Token record, not linked to sender) |
-| **Sell payouts, redemptions, refunds** | **Private** (`transfer_public_to_private`) |
-| Market creation, resolution votes | Public |
-| Transaction fee payer | Public (Aleo protocol requirement) |
-
-## Key Transitions
-
-### Market Contracts (v35 / usdcx_v5 / usad_v12 — 22 transitions each)
-
-**Trading (Private):**
-`create_market` · `buy_shares_private` · `sell_shares` · `add_liquidity`
-
-**Resolution (Multi-Voter Quorum + Dispute):**
-`vote_outcome` · `finalize_votes` · `confirm_resolution` · `dispute_resolution` · `claim_voter_bond` · `claim_dispute_bond` · `claim_voter_reward`
-
-**Lifecycle:**
-`close_market` · `cancel_market`
-
-**Redemption:**
-`redeem_shares` · `claim_refund` · `claim_lp_refund` · `withdraw_lp_resolved` · `withdraw_creator_fees`
-
-**Treasury (Multisig):**
-`init_multisig` · `propose_treasury_withdrawal` · `approve_proposal` · `execute_proposal`
-
-### Governance Contract (v4 — 29 transitions)
-
-**Proposals:** `create_proposal` · `vote_for` · `vote_against` · `finalize_vote` · `execute_governance` · `veto_proposal` · `unlock_after_vote`
-
-**Delegation:** `delegate_votes` · `undelegate_votes`
-
-**Resolver Registry:** `register_resolver` · `unstake_resolver` · `upgrade_resolver_tier` · `slash_resolver` · `blacklist_resolver` · `update_resolver_stats`
-
-**Committee:** `set_committee_members` · `assign_resolver_panel` · `panel_vote` · `committee_vote_resolve` · `finalize_committee_vote` · `escalate_to_community` · `governance_resolve` · `initiate_escalation`
-
-**Rewards & Treasury:** `fund_reward_epoch` · `record_contribution` · `claim_reward` · `init_governance` · `deposit_protocol_fees` · `execute_treasury_proposal`
-
-## FPMM Model
-
-| | Formula |
-|---|---|
-| **Buy** | `shares_out = (r_i + a) - r_i * prod(r_k / (r_k + a))` for active k ≠ i |
-| **Sell** | `shares_needed = r_i_new - r_i + pool_out` where `r_i_new = r_i * prod(r_k / (r_k - p))` |
-| **Redeem** | Winning shares 1:1 against collateral, losing shares = 0 |
-| **Fees** | 0.5% protocol + 0.5% creator + 1% LP = **2% total** |
-
-## Shield Wallet Integration
-
-- **`recordIndices`** — Shield Wallet requires a `recordIndices` hint to identify which input indices are record types
-- **MerkleProof Compatibility** — USDCX/USAD contracts use locally-defined `MerkleProof` struct (NullPay pattern) + deploy via `snarkos developer deploy` to avoid Shield parser limitations
-- **Token Record Format** — Frontend validates records are in Leo plaintext format before passing to wallet
 
 ## Quick Start
 
+### Prerequisites
+
+- Node.js 18+
+- MetaMask or any EVM wallet
+- Sepolia ETH ([faucet](https://sepoliafaucet.com/))
+
+### Frontend
+
 ```bash
-git clone https://github.com/AkindoHQ/aleo-akindo.git
-cd aleo-akindo/veiled-markets/frontend
-npm install --legacy-peer-deps
+cd frontend
+npm install
 cp .env.example .env
-# Edit .env with your Supabase and Pinata keys
+# Edit .env with your Supabase and Pinata keys (optional)
 npm run dev
 ```
 
-**Wallet:** Install [Shield Wallet](https://shieldwallet.io/), switch to Testnet, get credits from [Aleo Faucet](https://faucet.aleo.org).
+### Deploy Contracts
+
+```bash
+cd contracts-fhenix
+npm install
+cp .env.example .env
+# Add DEPLOYER_PRIVATE_KEY to .env
+
+npx hardhat compile
+npx hardhat run scripts/deploy.ts --network eth-sepolia
+```
 
 ### Environment Variables
 
 ```env
-# Network
-VITE_NETWORK=testnet
-VITE_ALEO_RPC_URL=https://api.explorer.provable.com/v1/testnet
+# Contracts (defaults are pre-filled with deployed addresses)
+VITE_MARKETS_CONTRACT=0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a
+VITE_GOVERNANCE_CONTRACT=0x3D323bF271E86F57d7FE2614535e969bb5A9AE36
 
-# Contracts
-VITE_PROGRAM_ID=veiled_markets_v35.aleo
-VITE_USDCX_MARKET_PROGRAM_ID=veiled_markets_usdcx_v5.aleo
-VITE_USAD_PROGRAM_ID=veiled_markets_usad_v12.aleo
-VITE_USDCX_PROGRAM_ID=test_usdcx_stablecoin.aleo
-VITE_GOVERNANCE_PROGRAM_ID=veiled_governance_v4.aleo
+# Privy (wallet authentication)
+VITE_PRIVY_APP_ID=your-privy-app-id
 
-# Supabase + IPFS
+# Optional: Supabase (cross-device bet sync with E2E encryption)
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
+
+# Optional: IPFS (market metadata)
 VITE_PINATA_JWT=your-pinata-jwt
-```
-
-### Build & Deploy Contracts
-
-```bash
-# Main contract (ALEO only — no MerkleProof patch needed)
-cd contracts && leo deploy --network testnet --yes --broadcast
-
-# USDCX contract (requires MerkleProof patch for Shield Wallet)
-cd ../contracts-usdcx && leo build
-# Add local MerkleProof struct + unqualify reference in build/main.aleo
-snarkos developer deploy veiled_markets_usdcx_v5.aleo --path build --network 1 --broadcast
-
-# USAD contract (same patch process)
-cd ../contracts-usad && leo build
-# Patch build/main.aleo, then:
-snarkos developer deploy veiled_markets_usad_v12.aleo --path build --network 1 --broadcast
 ```
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| **Contracts** | Leo (Aleo), snarkVM, snarkOS |
-| **Frontend** | React 18, TypeScript, Vite 5, Tailwind CSS 3, Framer Motion |
-| **State** | Zustand (blockchain store + app state) |
-| **Charts** | Recharts |
-| **Wallet** | ProvableHQ Aleo Wallet Adapter (Shield, Puzzle, Leo, Fox, Soter) |
-| **Persistence** | Supabase (AES-256-GCM encrypted) + localStorage |
+| **Smart Contracts** | Solidity 0.8.25, Hardhat, @fhenixprotocol/cofhe-contracts |
+| **FHE** | Fhenix CoFHE coprocessor (euint128, ebool, FHE.add/sub/select) |
+| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion |
+| **Wallet** | Privy (MetaMask, WalletConnect, Coinbase, embedded wallets) |
+| **State** | Zustand |
+| **Persistence** | Supabase (AES-256-GCM client-side encrypted) + localStorage |
 | **Metadata** | IPFS via Pinata |
-| **Hosting** | Vercel |
+| **Network** | Ethereum Sepolia (chainId 11155111) |
 
-## Wave 3 → Wave 4 Improvements
+## Privacy Guarantees
 
-| Aspect | Wave 3 | Wave 4 |
-|--------|--------|--------|
-| **Resolution** | Single designated resolver | Multi-Voter Quorum (3+ voters with bonds) |
-| **Dispute** | 1× bond, single challenger | 3× bond dispute + slashing |
-| **Governance** | Not implemented | 29-transition contract deployed |
-| **Token** | Dual (ALEO + USDCX in 1 contract) | Tri-token, each in separate contract |
-| **Deployer control** | Resolver whitelist, admin gates | Only `init_multisig` (one-time setup) |
-| **Contract budget** | 31/31 (at limit) | 22/31 per contract (9 slots free) |
-| **Portfolio** | Card list | Table layout with Performance chart |
+**What an on-chain observer sees:**
+- A user sent X ETH to the FhenixMarkets contract
+- A `SharesBought(marketId, buyer)` event was emitted
+- A `TaskCreated` event from the CoFHE coprocessor (FHE computation)
 
-## Contributing
+**What they cannot determine:**
+- Which outcome the user bet on (not in events)
+- How many shares they received (encrypted in `euint128`)
+- Their total position size (encrypted balance, no `balanceOf`)
+- Their LP position (encrypted in `euint128`)
 
-1. Fork the repo
-2. Create feature branch (`git checkout -b feature/name`)
-3. Commit changes and open Pull Request
+**Known limitations:**
+- `msg.value` is always public on EVM — the amount of ETH sent is visible
+- AMM reserve changes are public — sophisticated analysis of reserve deltas could narrow down trade direction
+- Calldata contains the outcome parameter in plaintext — a future version could use encrypted inputs (`InEuint8`)
 
 ## License
 
@@ -289,8 +254,8 @@ MIT License — see [LICENSE](./LICENSE)
 
 <div align="center">
 
-**Built on Aleo**
+**Built with Fhenix CoFHE on Ethereum**
 
-[Live Demo](https://veiledmarkets.xyz) · [Main Contract](https://testnet.explorer.provable.com/program/veiled_markets_v35.aleo) · [USDCX Contract](https://testnet.explorer.provable.com/program/veiled_markets_usdcx_v5.aleo) · [USAD Contract](https://testnet.explorer.provable.com/program/veiled_markets_usad_v12.aleo) · [Governance](https://testnet.explorer.provable.com/program/veiled_governance_v4.aleo)
+[FhenixMarkets Contract](https://sepolia.etherscan.io/address/0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a) · [FhenixGovernance Contract](https://sepolia.etherscan.io/address/0x3D323bF271E86F57d7FE2614535e969bb5A9AE36)
 
 </div>

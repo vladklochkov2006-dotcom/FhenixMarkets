@@ -41,7 +41,7 @@ export function BugBounty() {
               {[
                 {
                   title: 'Smart Contract Scope',
-                  desc: 'FhenixMarkets.sol, FhenixMarketsUSDCX.sol, FhenixMarketsUSAD.sol, and FhenixGovernance.sol',
+                  desc: 'FhenixMarkets.sol and FhenixGovernance.sol',
                 },
                 {
                   title: 'Frontend Scope',

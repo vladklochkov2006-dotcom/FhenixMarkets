@@ -45,10 +45,10 @@ export function APIDocs() {
               <Package className="w-5 h-5 text-brand-400" />
               <h2 className="text-lg font-semibold text-white">Installation</h2>
             </div>
-            <CodeBlock title="terminal">{`npm install @fhenix-markets/sdk @provablehq/sdk`}</CodeBlock>
+            <CodeBlock title="terminal">{`npm install @fhenix-markets/sdk cofhejs ethers`}</CodeBlock>
             <p className="mt-4 text-surface-400">
-              The SDK requires <code className="text-surface-300 bg-white/[0.04] px-1.5 py-0.5 rounded">@provablehq/sdk</code> as
-              a peer dependency for Fhenix network communication.
+              The SDK requires <code className="text-surface-300 bg-white/[0.04] px-1.5 py-0.5 rounded">cofhejs</code> and
+              <code className="text-surface-300 bg-white/[0.04] px-1.5 py-0.5 rounded">ethers</code> as peer dependencies for Fhenix network communication.
             </p>
           </section>
 
@@ -62,7 +62,7 @@ export function APIDocs() {
 
 // Initialize client
 const client = createClient({
-  rpcUrl: 'https://api.explorer.provable.com/v1/testnet',
+  rpcUrl: 'https://ethereum-sepolia.publicnode.com',
   contractAddress: 'FhenixMarkets.sol',
 })
 
@@ -208,7 +208,7 @@ enum Outcome {
   One = 1, Two = 2, Three = 3, Four = 4,
   Yes = 1, No = 2  // Legacy aliases
 }
-enum TokenType { ETH = 1, USDCX = 2, USAD = 3 }
+enum TokenType { ETH = 1 }
 enum MarketCategory {
   Politics = 1, Sports = 2, Crypto = 3, Entertainment = 4,
   Science = 5, Economics = 6, Other = 99
@@ -226,7 +226,7 @@ interface Market {
   resolutionDeadline: bigint     // u64
   status: MarketStatus           // u8
   createdAt: bigint              // u64
-  tokenType: TokenType           // u8 — ETH, USDCX, or USAD
+  tokenType: TokenType           // u8 — ETH
 }
 
 interface MarketWithStats extends Market {
@@ -291,22 +291,6 @@ interface DisputeData {
                 </p>
               </div>
               <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                <h3 className="font-mono text-sm text-white mb-1">FhenixMarketsUSDCX.sol</h3>
-                <p className="text-xs text-surface-500 mb-3">USDCX market contract — 22 functions</p>
-                <p className="text-sm text-surface-400">
-                  Handles USDCX-denominated markets with the same functionality as the ETH contract.
-                  Uses Token records with MerkleProof for private trading.
-                </p>
-              </div>
-              <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                <h3 className="font-mono text-sm text-white mb-1">FhenixMarketsUSAD.sol</h3>
-                <p className="text-xs text-surface-500 mb-3">USAD market contract — 22 functions</p>
-                <p className="text-sm text-surface-400">
-                  Handles USAD-denominated markets with the same functionality as the ETH contract.
-                  Uses Token records with MerkleProof for private trading.
-                </p>
-              </div>
-              <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04]">
                 <h3 className="font-mono text-sm text-white mb-1">FhenixGovernance.sol</h3>
                 <p className="text-xs text-surface-500 mb-3">Governance contract — 29 functions</p>
                 <p className="text-sm text-surface-400">
@@ -322,19 +306,19 @@ interface DisputeData {
             <h2 className="text-lg font-semibold text-white mb-4">Network Configuration</h2>
             <CodeBlock title="typescript">{`// Testnet (default)
 const client = createClient({
-  networkUrl: 'https://api.explorer.provable.com/v1/testnet',
+  networkUrl: 'https://ethereum-sepolia.publicnode.com',
   contractAddress: 'FhenixMarkets.sol',
 })
 
 // Mainnet (future)
 const client = createClient({
-  networkUrl: 'https://api.explorer.provable.com/v1/mainnet',
+  networkUrl: 'https://api.fhenix.zone',
   contractAddress: 'FhenixMarkets.sol',
 })
 
 // Explorer URLs
-// Testnet: https://testnet.explorer.provable.com
-// Mainnet: https://explorer.provable.com`}</CodeBlock>
+// Testnet: https://sepolia.etherscan.io
+// Mainnet: https://explorer.fhenix.zone`}</CodeBlock>
           </section>
 
           {/* Formatting Utilities */}
