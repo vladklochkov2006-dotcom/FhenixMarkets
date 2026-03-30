@@ -44,7 +44,7 @@ type MarketResolutionData = { outcome: number; finalized: boolean; winning_outco
 type MarketFeesData = { creator_fees: bigint; protocol_fees: bigint } | null
 type DisputeDataResult = { disputed: boolean } | null
 
-// Stubs for Aleo-specific functions no longer needed
+// Stubs for legacy functions replaced by EVM contracts
 const getCurrentBlockHeight = async (): Promise<bigint> => BigInt(Math.floor(Date.now() / 1000))
 const getMarketResolution = async (_id: string, _pid: string): Promise<MarketResolutionData> => null
 const getMarketFees = async (_id: string, _pid: string): Promise<MarketFeesData> => null

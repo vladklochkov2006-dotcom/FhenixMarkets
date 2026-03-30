@@ -1,10 +1,8 @@
 #!/bin/bash
 set -e
 
-echo "Building Veiled Markets..."
+echo "Building Fhenix Markets..."
 echo "Current directory: $(pwd)"
-echo "Listing files:"
-ls -la
 
 # Navigate to frontend directory
 cd frontend

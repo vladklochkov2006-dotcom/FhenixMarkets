@@ -28,7 +28,6 @@ const CRYPTO_LOGOS: Record<string, string> = {
   bitcoin: 'https://assets.coingecko.com/coins/images/1/small/bitcoin.png',
   ethereum: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png',
   solana: 'https://assets.coingecko.com/coins/images/4128/small/solana.png',
-  aleo: 'https://assets.coingecko.com/coins/images/29860/small/aleo.png',
   binancecoin: 'https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png',
   ripple: 'https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png',
   dogecoin: 'https://assets.coingecko.com/coins/images/5/small/dogecoin.png',

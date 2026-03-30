@@ -20,7 +20,7 @@ import { getWalletDisplayInfo } from '@/lib/wallet'
 import { DashboardHeader } from '@/components/DashboardHeader'
 import { Footer } from '@/components/Footer'
 import { cn, formatCredits } from '@/lib/utils'
-// Stub: Aleo-specific stale data clearing not needed on Ethereum
+// Stale data clearing stub (not needed on Ethereum)
 const clearAllStaleData = async () => 'No stale data to clear (Ethereum mode).'
 
 function getSetting(key: string, fallback: string): string {

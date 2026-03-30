@@ -1,7 +1,7 @@
 // ============================================================================
 // CONTRACTS — Ethers.js integration with FhenixMarkets + FhenixGovernance
 // ============================================================================
-// Replaces aleo-client.ts. All reads use a public JsonRpcProvider (no wallet).
+// All reads use a public JsonRpcProvider (no wallet).
 // All writes use the Privy signer via window.__privyGetSigner().
 // ============================================================================
 

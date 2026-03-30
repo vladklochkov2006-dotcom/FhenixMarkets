@@ -9,7 +9,7 @@ import { TransactionLink } from './TransactionLink'
 // config import removed — deadlines use timestamps on Ethereum
 import { devWarn } from '../lib/logger'
 
-// Local constants (migrated from aleo-client)
+// Local constants
 const CHALLENGE_WINDOW_BLOCKS = 2880n // ~12 hours
 const MIN_DISPUTE_BOND = 1000000n     // 1 token
 

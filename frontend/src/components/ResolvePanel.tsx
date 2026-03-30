@@ -95,8 +95,7 @@ async function inspectVoterBondReceiptsForMarket(
 ): Promise<MarketReceiptScanResult> {
   let matchedUnspent: ParsedVoterBondReceipt | null = null
   let matchedSpent: ParsedVoterBondReceipt | null = null
-  // Aleo wallet strategies removed — on Ethereum/Fhenix, VoterBondReceipt data
-  // will be read from the FhenixMarkets contract via ethers.js
+  // On Ethereum/Fhenix, VoterBondReceipt data is read from the FhenixMarkets contract via ethers.js
   devLog(`${logPrefix} Ethereum mode: VoterBondReceipt lookup via contract (TODO)`)
 
   if (!matchedUnspent && !matchedSpent) {

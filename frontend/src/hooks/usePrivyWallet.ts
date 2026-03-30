@@ -1,5 +1,5 @@
 // ============================================================================
-// usePrivyWallet — Drop-in replacement for useWallet() from Aleo adapter
+// usePrivyWallet — Drop-in replacement for useWallet()
 // ============================================================================
 // Reads wallet state from Zustand store (synced by PrivyWalletBridge).
 // Does NOT depend on PrivyProvider context — works in any React tree.

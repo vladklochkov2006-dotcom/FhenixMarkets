@@ -17,7 +17,7 @@ import { cn, formatCredits, getTokenSymbol } from '@/lib/utils'
 import { redeemShares as contractRedeem, claimRefund as contractClaimRefund, parseContractError, ensureSepoliaNetwork } from '@/lib/contracts'
 import { TransactionLink } from './TransactionLink'
 
-// Local stubs — on Ethereum, share balances are tracked in the contract (no Aleo records)
+// Local stubs — on Ethereum, share balances are tracked in the contract
 interface ParsedOutcomeShare {
   marketId: string | null
   owner: string | null

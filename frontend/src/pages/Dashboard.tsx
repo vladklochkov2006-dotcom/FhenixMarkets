@@ -18,7 +18,7 @@ import { DashboardHero } from '@/components/DashboardHero'
 import { cn, formatCredits, getCategoryEmoji } from '@/lib/utils'
 import { devWarn } from '../lib/logger'
 
-// Stubs for Aleo-specific pending market resolution (not needed on Ethereum)
+// Stubs for pending market resolution (not needed on Ethereum)
 type PendingMarketInfo = { count: number; questions: string[]; statuses: string[]; retryCounts: number[] }
 const hasPendingMarkets = () => false
 const getPendingMarketsInfo = (): PendingMarketInfo => ({ count: 0, questions: [], statuses: [], retryCounts: [] })

@@ -14,7 +14,6 @@ const KEYWORD_IMAGES: Array<[string[], string]> = [
   [['bitcoin', 'btc'],       'https://assets.coingecko.com/coins/images/1/small/bitcoin.png'],
   [['ethereum', 'eth'],      'https://assets.coingecko.com/coins/images/279/small/ethereum.png'],
   [['solana', 'sol'],        'https://assets.coingecko.com/coins/images/4128/small/solana.png'],
-  [['aleo'],                 'https://assets.coingecko.com/coins/images/29936/small/aleo.png'],
   [['cardano', 'ada'],       'https://assets.coingecko.com/coins/images/975/small/cardano.png'],
   [['polkadot', 'dot'],      'https://assets.coingecko.com/coins/images/12171/small/polkadot.png'],
   [['avalanche', 'avax'],    'https://assets.coingecko.com/coins/images/12559/small/Avalanche_Circle_RedWhite_Trans.png'],

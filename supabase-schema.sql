@@ -1,5 +1,5 @@
 -- ============================================================================
--- VEILED MARKETS — Supabase Schema
+-- FHENIX MARKETS — Supabase Schema
 -- ============================================================================
 -- Run this SQL in your Supabase SQL Editor to create the required tables.
 -- Tables: user_bets, pending_bets, commitment_records, market_registry

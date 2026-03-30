@@ -1,7 +1,7 @@
 // ============================================================================
 // useContractTransaction — Ethers.js transaction execution hook
 // ============================================================================
-// Replaces useAleoTransaction. Executes contract calls via Privy signer.
+// Executes contract calls via Privy signer.
 // Handles demo mode, user rejection, gas estimation, and receipt waiting.
 // ============================================================================
 

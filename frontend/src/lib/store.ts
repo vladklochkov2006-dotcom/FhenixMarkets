@@ -25,7 +25,7 @@ import {
 } from './supabase'
 
 // ============================================================================
-// Stubs for removed Aleo-specific functions (replaced by EVM contracts.ts)
+// EVM contract interaction stubs
 // ============================================================================
 
 /** Legacy CONTRACT_INFO stub — provides programId for code that still references it */
@@ -36,17 +36,17 @@ export const CONTRACT_INFO = {
   useMockData: false,
 }
 
-/** Stub: Aleo program IDs are not applicable on EVM; returns the markets contract address */
+/** Returns the markets contract address */
 function getProgramIdForToken(_token: string): string {
   return FHENIX_MARKETS_ADDRESS
 }
 
-/** Stub: Aleo transaction diagnosis not applicable on EVM */
+/** Transaction diagnosis stub — not available on EVM */
 async function diagnoseTransaction(_txId: string): Promise<{ status: string; error?: string }> {
-  return { status: 'unknown', error: 'Aleo transaction diagnosis not available on EVM' }
+  return { status: 'unknown', error: 'Transaction diagnosis not available on EVM' }
 }
 
-/** Stub: Aleo-specific input builder not applicable on EVM */
+/** Input builder stub — not applicable on EVM */
 function buildBuySharesInputs(
   _marketId: string,
   _outcomeNum: number,
@@ -59,14 +59,14 @@ function buildBuySharesInputs(
   return { functionName: 'buyShares', inputs: [] }
 }
 
-/** Read market data from the on-chain contract (EVM replacement for Aleo getMarket) */
+/** Reads market data from on-chain contract */
 async function getMarket(marketId: string): Promise<{ status: number } | null> {
   const data = await fetchMarketFromChain(marketId)
   if (!data) return null
   return { status: data.status }
 }
 
-/** Read market resolution from the on-chain contract (EVM replacement for Aleo getMarketResolution) */
+/** Reads resolution from on-chain contract */
 async function getMarketResolution(marketId: string): Promise<{ winning_outcome: number } | null> {
   const tally = await fetchVoteTally(marketId)
   if (!tally || !tally.finalized) return null
@@ -218,7 +218,6 @@ interface WalletStore {
   connect: (walletType: WalletType) => Promise<void>
   disconnect: () => Promise<void>
   refreshBalance: () => Promise<void>
-  // shieldCredits removed — Aleo-specific
   testTransaction: () => Promise<string>
   clearError: () => void
 }
@@ -352,8 +351,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
       const publicBalance = await fetchPublicBalance(wallet.address)
       devLog('[Balance] ETH balance:', publicBalance.toString(), 'wei')
 
-      // On Ethereum/Fhenix, there's no "private balance" concept like Aleo records.
-      // Encrypted share balances are stored in the FhenixMarkets contract.
+      // Balance is on-chain; encrypted share balances are stored in the FhenixMarkets contract.
       const balance: WalletBalance = { public: publicBalance, private: 0n }
 
       set({
@@ -366,8 +364,6 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
       console.error('Failed to refresh balance:', error)
     }
   },
-
-  // shieldCredits removed — Aleo-specific, not applicable on Ethereum/Fhenix
 
   testTransaction: async () => {
     const txId = await walletManager.testTransaction()
@@ -981,7 +977,7 @@ async function refreshSharesFromWallet(
   _get: () => { userBets: Bet[] },
   _set: (partial: Partial<{ userBets: Bet[] }>) => void,
 ) {
-  // No-op: Aleo record scanning removed. Share balances live in FHE contract state.
+  // Share balances are stored in FHE contract state.
 }
 
 // ---- Supabase background sync helpers ----

@@ -1,8 +1,7 @@
 // ============================================================================
 // WALLET INTEGRATION (Simplified)
 // ============================================================================
-// Previously contained full Aleo wallet adapter implementations for Leo, Fox,
-// Soter, Puzzle, and Shield wallets. Now simplified for Privy/Ethereum wallets.
+// Simplified wallet integration for Privy/Ethereum wallets.
 // Keeps type exports and utility functions used by store.ts.
 // ============================================================================
 
@@ -54,7 +53,7 @@ export interface WalletTransactionStatusResult {
  */
 export async function lookupWalletTransactionStatus(txId: string): Promise<WalletTransactionStatusResult | null> {
   if (!txId || typeof window === 'undefined') return null;
-  // No Aleo wallet extensions to poll in Privy/Ethereum mode
+  // No wallet extensions to poll in Privy/Ethereum mode
   return null;
 }
 
@@ -90,8 +89,7 @@ export type WalletType = string;
 // ============================================================================
 // WALLET MANAGER (Stub)
 // ============================================================================
-// Previously managed multiple Aleo wallet adapters.
-// Now a stub that provides demo mode and basic interface compatibility.
+// Stub that provides demo mode and basic interface compatibility.
 // Real wallet management is handled by Privy via PrivyWalletBridge.
 // ============================================================================
 
@@ -169,7 +167,7 @@ export class WalletManager {
     throw new Error('Wallet not connected');
   }
 
-  // shieldCredits removed — Aleo-specific, not applicable on Ethereum/Fhenix
+  // shieldCredits — not applicable on Ethereum/Fhenix
 
   async signMessage(message: string): Promise<string> {
     if (this.demoMode) {

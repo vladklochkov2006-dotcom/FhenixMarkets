@@ -1,5 +1,5 @@
 -- ============================================================================
--- VEILED GOVERNANCE — Supabase Schema Migration
+-- FHENIX GOVERNANCE — Supabase Schema Migration
 -- ============================================================================
 -- Run this SQL in Supabase SQL Editor to create governance tables.
 -- ============================================================================

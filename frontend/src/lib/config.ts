@@ -101,7 +101,7 @@ function loadConfig(): AppConfig {
     // App
     appName: getEnv('VITE_APP_NAME', 'Fhenix Markets'),
     appDescription: getEnv('VITE_APP_DESCRIPTION', 'Privacy-Preserving Prediction Markets on Fhenix'),
-    appUrl: getEnv('VITE_APP_URL', 'https://veiled.markets'),
+    appUrl: getEnv('VITE_APP_URL', 'https://fhenix.markets'),
 
 };
 }
