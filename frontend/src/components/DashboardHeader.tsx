@@ -44,6 +44,20 @@ export function DashboardHeader() {
 
   useEffect(() => setShowMobileMenu(false), [location.pathname])
 
+  // Auto-refresh balance on mount and when address changes
+  useEffect(() => {
+    if (wallet.connected && wallet.address) {
+      refreshBalance()
+    }
+  }, [wallet.connected, wallet.address])
+
+  // Periodic balance refresh every 30s
+  useEffect(() => {
+    if (!wallet.connected) return
+    const interval = setInterval(() => refreshBalance(), 30_000)
+    return () => clearInterval(interval)
+  }, [wallet.connected])
+
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 20)
     window.addEventListener('scroll', handleScroll)

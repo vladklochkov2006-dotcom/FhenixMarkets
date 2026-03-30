@@ -62,28 +62,42 @@ export async function lookupWalletTransactionStatus(txId: string): Promise<Walle
  * Returns balance in wei as bigint.
  */
 export async function fetchPublicBalance(address: string): Promise<bigint> {
-  // Try Privy provider first, then fallback to public RPC
+  console.log('[wallet] fetchPublicBalance called for:', address)
+
+  // Try Privy provider first
   try {
     const getProvider = (window as any).__privyGetProvider;
     if (typeof getProvider === 'function') {
       const provider = await getProvider();
       const balance = await provider.getBalance(address);
-      devLog('[wallet] Balance via Privy provider:', balance.toString());
-      return BigInt(balance.toString());
+      console.log('[wallet] Balance via Privy provider:', balance.toString(), 'wei')
+      if (balance > 0n) return BigInt(balance.toString());
+    } else {
+      console.log('[wallet] __privyGetProvider not available')
     }
   } catch (err) {
-    devWarn('[wallet] Privy provider balance failed, trying public RPC:', err);
+    console.warn('[wallet] Privy provider balance failed:', err);
   }
 
-  // Fallback: fetch from public RPC directly
+  // Fallback: direct JSON-RPC fetch (no ethers dependency issues)
   try {
-    const { JsonRpcProvider } = await import('ethers');
-    const pub = new JsonRpcProvider('https://ethereum-sepolia.publicnode.com');
-    const balance = await pub.getBalance(address);
-    devLog('[wallet] Balance via public RPC:', balance.toString());
-    return BigInt(balance.toString());
+    console.log('[wallet] Trying public RPC fallback...')
+    const resp = await fetch('https://ethereum-sepolia.publicnode.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_getBalance',
+        params: [address, 'latest'],
+      }),
+    })
+    const data = await resp.json()
+    const balance = BigInt(data.result || '0x0')
+    console.log('[wallet] Balance via public RPC:', balance.toString(), 'wei')
+    return balance
   } catch (err) {
-    devWarn('[wallet] Public RPC balance also failed:', err);
+    console.error('[wallet] Public RPC balance also failed:', err);
     return 0n;
   }
 }

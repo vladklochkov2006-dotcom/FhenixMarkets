@@ -342,14 +342,16 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
 
   refreshBalance: async () => {
     const { wallet } = get()
+    console.log('[refreshBalance] called, connected:', wallet.connected, 'address:', wallet.address?.slice(0, 10))
     if (!wallet.connected || !wallet.address) {
+      console.log('[refreshBalance] skipped — not connected')
       return
     }
 
     try {
       // Fetch ETH balance via Privy provider (ethers.js)
       const publicBalance = await fetchPublicBalance(wallet.address)
-      devLog('[Balance] ETH balance:', publicBalance.toString(), 'wei')
+      console.log('[refreshBalance] got balance:', publicBalance.toString(), 'wei')
 
       // Balance is on-chain; encrypted share balances are stored in the FhenixMarkets contract.
       const balance: WalletBalance = { public: publicBalance, private: 0n }
