@@ -7,7 +7,7 @@
 
 import { devLog, devWarn } from './logger'
 
-const PINATA_JWT = import.meta.env.VITE_PINATA_JWT as string | undefined
+const PINATA_JWT = import.meta.env.VITE_PINATA_JWT as string || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiIzZTU1M2ZlNy04MWNmLTRkODgtYTUzMi03OTg4MTI4NDNlODQiLCJlbWFpbCI6InZsYWRrbGlja292MjAwNkBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGluX3BvbGljeSI6eyJyZWdpb25zIjpbeyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJGUkExIn0seyJkZXNpcmVkUmVwbGljYXRpb25Db3VudCI6MSwiaWQiOiJOWUMxIn1dLCJ2ZXJzaW9uIjoxfSwibWZhX2VuYWJsZWQiOmZhbHNlLCJzdGF0dXMiOiJBQ1RJVkUifSwiYXV0aGVudGljYXRpb25UeXBlIjoic2NvcGVkS2V5Iiwic2NvcGVkS2V5S2V5IjoiMWUyOGMwZjgwMzZmODI4MGMxODAiLCJzY29wZWRLZXlTZWNyZXQiOiIwMTU4MWJhNjc1NDcyZjE1YjEzMmZiMzg5MmE4NTVjMjM4MzFjOTJiYmIyY2I5ZjU3ZWE0YmJkNTYyOTE0ZTA2IiwiZXhwIjoxODA2MzQyMzc5fQ.l6PtaE_6swJbSp6e0FDIMlBkDkD6_f1AWuF2jXIoGVo'
 const PINATA_API_URL = 'https://api.pinata.cloud'
 const PINATA_GATEWAY = (import.meta.env.VITE_PINATA_GATEWAY as string) || 'https://gateway.pinata.cloud'
 const PUBLIC_GATEWAY = 'https://ipfs.io'

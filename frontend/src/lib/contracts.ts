@@ -314,13 +314,17 @@ export async function createMarket(
   resolver: string,
   initialLiquidityWei: bigint,
 ): Promise<ethers.TransactionReceipt> {
-  devLog('[contracts] createMarket', { questionHash, category, numOutcomes, deadline })
+  console.log('[contracts] createMarket', { questionHash, category, numOutcomes, deadline: deadline.toString(), value: initialLiquidityWei.toString() })
   const c = await getMarketsWrite()
+  console.log('[contracts] contract ready, sending tx...')
   const tx = await c.createMarket(
     questionHash, category, numOutcomes, deadline, resolutionDeadline, resolver,
     { value: initialLiquidityWei }
   )
-  return await waitForReceipt(tx)
+  console.log('[contracts] tx sent:', tx.hash)
+  const receipt = await waitForReceipt(tx)
+  console.log('[contracts] receipt received, logs:', receipt.logs.length)
+  return receipt
 }
 
 export async function buyShares(

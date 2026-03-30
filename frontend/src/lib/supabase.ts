@@ -38,13 +38,11 @@ export interface MarketRegistryEntry {
   initial_liquidity?: number // in micro units
 }
 
-// Initialize Supabase client (null if env vars not configured)
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+// Initialize Supabase client (fallbacks for production builds)
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string || 'https://nwpzbuztlqypejbeyxla.supabase.co'
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im53cHpidXp0bHF5cGVqYmV5eGxhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3OTk3MjksImV4cCI6MjA5MDM3NTcyOX0.LImNELAPf_eH6Up_WE39rUPr9cgeSak6Tv9sPT2fJC4'
 
-export const supabase = (supabaseUrl && supabaseAnonKey)
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : null
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 export function isSupabaseAvailable(): boolean {
   return supabase !== null
@@ -349,19 +347,21 @@ export async function upsertCommitments(records: CommitmentRecord[], address: st
  * Returns market IDs, question texts, and transaction IDs for all known markets.
  */
 export async function fetchMarketRegistry(): Promise<MarketRegistryEntry[]> {
-  if (!supabase) return []
+  console.log('[Supabase] fetchMarketRegistry called, client:', !!supabase)
+  if (!supabase) { console.warn('[Supabase] No client!'); return [] }
   try {
     const { data, error } = await supabase
       .from('market_registry')
       .select('*')
       .order('created_at', { ascending: false })
     if (error) {
-      devWarn('[Supabase] fetchMarketRegistry error:', error.message)
+      console.error('[Supabase] fetchMarketRegistry error:', error.message)
       return []
     }
+    console.log('[Supabase] fetchMarketRegistry got', data?.length, 'markets')
     return (data || []) as MarketRegistryEntry[]
   } catch (e) {
-    devWarn('[Supabase] fetchMarketRegistry exception:', e)
+    console.error('[Supabase] fetchMarketRegistry exception:', e)
     return []
   }
 }
@@ -370,15 +370,16 @@ export async function fetchMarketRegistry(): Promise<MarketRegistryEntry[]> {
  * Register a newly created market in Supabase so all users can discover it.
  */
 export async function registerMarketInRegistry(entry: MarketRegistryEntry): Promise<void> {
-  if (!supabase) return
+  if (!supabase) { console.warn('[Supabase] Client not initialized — market not saved'); return }
   try {
+    console.log('[Supabase] Registering market:', entry.market_id?.slice(0, 20))
     const { error } = await supabase
       .from('market_registry')
       .upsert([entry], { onConflict: 'market_id' })
-    if (error) devWarn('[Supabase] registerMarket error:', error.message)
-    else devLog('[Supabase] Market registered:', entry.market_id.slice(0, 20) + '...')
+    if (error) console.error('[Supabase] registerMarket error:', error.message)
+    else console.log('[Supabase] Market registered OK')
   } catch (e) {
-    devWarn('[Supabase] registerMarket exception:', e)
+    console.error('[Supabase] registerMarket exception:', e)
   }
 }
 

@@ -321,7 +321,9 @@ export function CreateMarketPage() {
         }).catch(err => devWarn('[CreateMarket] Supabase register failed:', err))
       }
     } catch (err: unknown) {
+      console.error('[CreateMarket] FULL ERROR:', err)
       const errorMsg = parseContractError(err)
+      console.error('[CreateMarket] Parsed error:', errorMsg)
       setError(errorMsg); setStep('error'); setIsSubmitting(false)
     }
   }
