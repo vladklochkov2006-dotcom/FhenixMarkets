@@ -221,7 +221,7 @@ VITE_PINATA_JWT=your-pinata-jwt
 |-------|-----------|
 | **Smart Contracts** | Solidity 0.8.25, Hardhat, @fhenixprotocol/cofhe-contracts |
 | **FHE** | Fhenix CoFHE coprocessor (euint128, ebool, FHE.add/sub/select) |
-| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion |
+| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion, PWA |
 | **Wallet** | Privy (MetaMask, WalletConnect, Coinbase, embedded wallets) |
 | **State** | Zustand |
 | **Persistence** | Supabase (AES-256-GCM client-side encrypted) + localStorage |
