@@ -402,8 +402,8 @@
       ]
     },
     "C:\\Users\\Vladislav Klochkov\\Desktop\\veiled-markets-main\\contracts-fhenix\\contracts\\FhenixMarkets.sol": {
-      "lastModificationDate": 1774898943191,
-      "contentHash": "cf62c504089c37d02d64e3233adfff24",
+      "lastModificationDate": 1774953287195,
+      "contentHash": "b72fb870a8ab98f46e9bacf6f41bb277",
       "sourceName": "contracts/FhenixMarkets.sol",
       "solcConfig": {
         "version": "0.8.25",

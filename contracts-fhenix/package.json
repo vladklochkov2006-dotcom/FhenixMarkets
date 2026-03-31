@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@fhenixprotocol/cofhe-contracts": "^0.1.3",
-    "@openzeppelin/contracts": "^5.0.0"
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^17.3.1"
   }
 }

@@ -115,27 +115,29 @@ contract FhenixMarkets {
     mapping(bytes32 => uint128)    public marketCredits;   // ETH held per market
 
     // Voter tracking: keccak256(marketId, voter) => VoterInfo
-    mapping(bytes32 => VoterInfo) public voters;
+    // PRIVATE: hides which outcome each voter chose and their bond
+    mapping(bytes32 => VoterInfo) private voters;
 
     // Dispute bonds: marketId => bond amount deposited
-    mapping(bytes32 => uint128) public disputeBonds;
+    mapping(bytes32 => uint128) private disputeBonds;
     // Dispute info: marketId => disputer address
-    mapping(bytes32 => address) public disputers;
+    mapping(bytes32 => address) private disputers;
     // Dispute proposed outcome
-    mapping(bytes32 => uint8) public disputeOutcomes;
+    mapping(bytes32 => uint8) private disputeOutcomes;
 
     // Share redemption tracking: keccak256(marketId, user, outcome) => redeemed
-    mapping(bytes32 => bool) public shareRedeemed;
+    mapping(bytes32 => bool) private shareRedeemed;
     // Creator fee claimed: marketId => claimed
-    mapping(bytes32 => bool) public creatorFeesClaimed;
+    mapping(bytes32 => bool) private creatorFeesClaimed;
     // LP refund claimed: keccak256(marketId, user) => claimed
-    mapping(bytes32 => bool) public lpRefundClaimed;
+    mapping(bytes32 => bool) private lpRefundClaimed;
 
-    // Protocol treasury
-    uint128 public protocolTreasury;
+    // Protocol treasury (private — no need to expose fee accumulation)
+    uint128 private protocolTreasury;
 
     // Voter rewards pool: address => accumulated rewards
-    mapping(address => uint128) public voterRewards;
+    // PRIVATE: hides how much each voter earned
+    mapping(address => uint128) private voterRewards;
 
     // ========================================================================
     // STATE — Encrypted (FHE private)
@@ -150,7 +152,7 @@ contract FhenixMarkets {
 
     // Total encrypted shares issued per outcome (for proportional LP withdrawal)
     // These are public counters used in AMM math
-    mapping(bytes32 => uint128) public totalSharesIssued; // keccak256(marketId, outcome)
+    mapping(bytes32 => uint128) private totalSharesIssued; // keccak256(marketId, outcome)
 
     // ========================================================================
     // EVENTS
@@ -161,8 +163,7 @@ contract FhenixMarkets {
         address indexed creator,
         bytes32 questionHash,
         uint8   numOutcomes,
-        uint64  deadline,
-        uint128 initialLiquidity
+        uint64  deadline
     );
 
     // Privacy-preserving events: no outcome, amount, or share counts leaked.
@@ -193,8 +194,7 @@ contract FhenixMarkets {
 
     event VoteSubmitted(
         bytes32 indexed marketId,
-        address indexed voter,
-        uint128 bondAmount
+        address indexed voter
     );
 
     event VotesFinalized(bytes32 indexed marketId, uint8 winningOutcome);
@@ -340,7 +340,7 @@ contract FhenixMarkets {
 
         emit MarketCreated(
             marketId, msg.sender, questionHash,
-            numOutcomes, deadline, initialLiquidity
+            numOutcomes, deadline
         );
 
         return marketId;
@@ -661,7 +661,7 @@ contract FhenixMarkets {
         tally.totalVoters++;
         tally.totalBonded += bondAmount;
 
-        emit VoteSubmitted(marketId, msg.sender, bondAmount);
+        emit VoteSubmitted(marketId, msg.sender);
     }
 
     // ========================================================================

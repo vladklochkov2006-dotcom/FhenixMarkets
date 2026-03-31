@@ -17,8 +17,8 @@ import { devLog, devWarn } from './logger'
 // ADDRESSES & CHAIN
 // ============================================================================
 
-export const FHENIX_MARKETS_ADDRESS = '0x94dB8402afe6b333C5167DF5eEAb20F8A193c29a'
-export const FHENIX_GOVERNANCE_ADDRESS = '0x3D323bF271E86F57d7FE2614535e969bb5A9AE36'
+export const FHENIX_MARKETS_ADDRESS = '0x38e99fD600dA4c169606Bb9c158AA917325aF6BA'
+export const FHENIX_GOVERNANCE_ADDRESS = '0xc7dcC0d57C73842B111A06D56a58B951588DD914'
 export const SEPOLIA_CHAIN_ID = 11155111
 export const SEPOLIA_RPC_URL = 'https://ethereum-sepolia.publicnode.com'
 
