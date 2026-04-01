@@ -266,7 +266,7 @@ export function CreateMarketModal({ isOpen, onClose, onSuccess }: CreateMarketMo
       )
 
       // 2. Parse MarketCreated event to get the on-chain marketId
-      const marketCreatedTopic = ethers.id('MarketCreated(bytes32,address,bytes32,uint8,uint64,uint128)')
+      const marketCreatedTopic = ethers.id('MarketCreated(bytes32,address,bytes32,uint8,uint64)')
       const marketCreatedLog = receipt.logs.find((log: any) => log.topics[0] === marketCreatedTopic)
       const marketId = marketCreatedLog?.topics[1] || questionHash
       devLog('[CreateMarket] On-chain marketId:', marketId)

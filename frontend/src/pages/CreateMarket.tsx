@@ -292,7 +292,7 @@ export function CreateMarketPage() {
       const activeLabels = formData.outcomeLabels.slice(0, formData.numOutcomes)
 
       // Parse MarketCreated event to get the real on-chain marketId
-      const marketCreatedTopic = ethers.id('MarketCreated(bytes32,address,bytes32,uint8,uint64,uint128)')
+      const marketCreatedTopic = ethers.id('MarketCreated(bytes32,address,bytes32,uint8,uint64)')
       const marketCreatedLog = receipt.logs.find((log: any) => log.topics[0] === marketCreatedTopic)
       const onChainMarketId = marketCreatedLog?.topics[1] || questionHash
       devLog('[CreateMarket] On-chain marketId:', onChainMarketId)
