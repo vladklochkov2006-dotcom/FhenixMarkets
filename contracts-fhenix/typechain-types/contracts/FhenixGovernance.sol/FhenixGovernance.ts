@@ -211,13 +211,9 @@ export interface FhenixGovernanceInterface extends Interface {
       | "createProposal"
       | "currentEpochId"
       | "delegateVotes"
-      | "delegatedPower"
-      | "delegationAmounts"
       | "deployer"
       | "depositProtocolFees"
       | "escalateToCommunity"
-      | "escalationBonds"
-      | "escalationVoted"
       | "escalations"
       | "executeGovernance"
       | "finalizeCommitteeVote"
@@ -232,7 +228,6 @@ export interface FhenixGovernanceInterface extends Interface {
       | "governanceResolve"
       | "governanceResolvedOutcomes"
       | "guardians"
-      | "hasVoted"
       | "initGovernance"
       | "initialized"
       | "initiateEscalation"
@@ -240,13 +235,11 @@ export interface FhenixGovernanceInterface extends Interface {
       | "panelVote"
       | "panelVoted"
       | "proposalCount"
-      | "proposalLocks"
       | "proposals"
       | "recordContribution"
       | "registerResolver"
       | "resolverPanels"
       | "resolverRegistry"
-      | "rewardClaimed"
       | "rewardEpochs"
       | "setCommitteeMembers"
       | "slashResolver"
@@ -256,13 +249,10 @@ export interface FhenixGovernanceInterface extends Interface {
       | "unstakeResolver"
       | "updateResolverStats"
       | "upgradeResolverTier"
-      | "userLPContributions"
-      | "userTradeVolume"
       | "vetoProposal"
       | "voteAgainst"
       | "voteEscalation"
       | "voteFor"
-      | "voteLocks"
       | "withdrawEscalationBond"
       | "withdrawTreasury"
   ): FunctionFragment;
@@ -518,14 +508,6 @@ export interface FhenixGovernanceInterface extends Interface {
     functionFragment: "delegateVotes",
     values: [AddressLike]
   ): string;
-  encodeFunctionData(
-    functionFragment: "delegatedPower",
-    values: [AddressLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "delegationAmounts",
-    values: [BytesLike]
-  ): string;
   encodeFunctionData(functionFragment: "deployer", values?: undefined): string;
   encodeFunctionData(
     functionFragment: "depositProtocolFees",
@@ -533,14 +515,6 @@ export interface FhenixGovernanceInterface extends Interface {
   ): string;
   encodeFunctionData(
     functionFragment: "escalateToCommunity",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "escalationBonds",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "escalationVoted",
     values: [BytesLike]
   ): string;
   encodeFunctionData(
@@ -593,7 +567,6 @@ export interface FhenixGovernanceInterface extends Interface {
     values: [BytesLike]
   ): string;
   encodeFunctionData(functionFragment: "guardians", values?: undefined): string;
-  encodeFunctionData(functionFragment: "hasVoted", values: [BytesLike]): string;
   encodeFunctionData(
     functionFragment: "initGovernance",
     values: [AddressLike, AddressLike, AddressLike, AddressLike]
@@ -623,10 +596,6 @@ export interface FhenixGovernanceInterface extends Interface {
     values?: undefined
   ): string;
   encodeFunctionData(
-    functionFragment: "proposalLocks",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
     functionFragment: "proposals",
     values: [BytesLike]
   ): string;
@@ -645,10 +614,6 @@ export interface FhenixGovernanceInterface extends Interface {
   encodeFunctionData(
     functionFragment: "resolverRegistry",
     values: [AddressLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "rewardClaimed",
-    values: [BytesLike]
   ): string;
   encodeFunctionData(
     functionFragment: "rewardEpochs",
@@ -690,14 +655,6 @@ export interface FhenixGovernanceInterface extends Interface {
     values: [AddressLike]
   ): string;
   encodeFunctionData(
-    functionFragment: "userLPContributions",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "userTradeVolume",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
     functionFragment: "vetoProposal",
     values: [BytesLike]
   ): string;
@@ -710,10 +667,6 @@ export interface FhenixGovernanceInterface extends Interface {
     values: [BytesLike, boolean]
   ): string;
   encodeFunctionData(functionFragment: "voteFor", values: [BytesLike]): string;
-  encodeFunctionData(
-    functionFragment: "voteLocks",
-    values: [AddressLike]
-  ): string;
   encodeFunctionData(
     functionFragment: "withdrawEscalationBond",
     values: [BytesLike]
@@ -942,14 +895,6 @@ export interface FhenixGovernanceInterface extends Interface {
     functionFragment: "delegateVotes",
     data: BytesLike
   ): Result;
-  decodeFunctionResult(
-    functionFragment: "delegatedPower",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "delegationAmounts",
-    data: BytesLike
-  ): Result;
   decodeFunctionResult(functionFragment: "deployer", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "depositProtocolFees",
@@ -957,14 +902,6 @@ export interface FhenixGovernanceInterface extends Interface {
   ): Result;
   decodeFunctionResult(
     functionFragment: "escalateToCommunity",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "escalationBonds",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "escalationVoted",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -1017,7 +954,6 @@ export interface FhenixGovernanceInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(functionFragment: "guardians", data: BytesLike): Result;
-  decodeFunctionResult(functionFragment: "hasVoted", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "initGovernance",
     data: BytesLike
@@ -1040,10 +976,6 @@ export interface FhenixGovernanceInterface extends Interface {
     functionFragment: "proposalCount",
     data: BytesLike
   ): Result;
-  decodeFunctionResult(
-    functionFragment: "proposalLocks",
-    data: BytesLike
-  ): Result;
   decodeFunctionResult(functionFragment: "proposals", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "recordContribution",
@@ -1059,10 +991,6 @@ export interface FhenixGovernanceInterface extends Interface {
   ): Result;
   decodeFunctionResult(
     functionFragment: "resolverRegistry",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "rewardClaimed",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -1102,14 +1030,6 @@ export interface FhenixGovernanceInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(
-    functionFragment: "userLPContributions",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "userTradeVolume",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
     functionFragment: "vetoProposal",
     data: BytesLike
   ): Result;
@@ -1122,7 +1042,6 @@ export interface FhenixGovernanceInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(functionFragment: "voteFor", data: BytesLike): Result;
-  decodeFunctionResult(functionFragment: "voteLocks", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "withdrawEscalationBond",
     data: BytesLike
@@ -1134,20 +1053,11 @@ export interface FhenixGovernanceInterface extends Interface {
 }
 
 export namespace DelegationCreatedEvent {
-  export type InputTuple = [
-    delegator: AddressLike,
-    delegate: AddressLike,
-    amount: BigNumberish
-  ];
-  export type OutputTuple = [
-    delegator: string,
-    delegate: string,
-    amount: bigint
-  ];
+  export type InputTuple = [delegator: AddressLike, delegate: AddressLike];
+  export type OutputTuple = [delegator: string, delegate: string];
   export interface OutputObject {
     delegator: string;
     delegate: string;
-    amount: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1156,20 +1066,11 @@ export namespace DelegationCreatedEvent {
 }
 
 export namespace DelegationRemovedEvent {
-  export type InputTuple = [
-    delegator: AddressLike,
-    delegate: AddressLike,
-    amount: BigNumberish
-  ];
-  export type OutputTuple = [
-    delegator: string,
-    delegate: string,
-    amount: bigint
-  ];
+  export type InputTuple = [delegator: AddressLike, delegate: AddressLike];
+  export type OutputTuple = [delegator: string, delegate: string];
   export interface OutputObject {
     delegator: string;
     delegate: string;
-    amount: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1178,14 +1079,10 @@ export namespace DelegationRemovedEvent {
 }
 
 export namespace EscalatedToCommunityEvent {
-  export type InputTuple = [
-    marketId: BytesLike,
-    communityDeadline: BigNumberish
-  ];
-  export type OutputTuple = [marketId: string, communityDeadline: bigint];
+  export type InputTuple = [marketId: BytesLike];
+  export type OutputTuple = [marketId: string];
   export interface OutputObject {
     marketId: string;
-    communityDeadline: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1194,23 +1091,11 @@ export namespace EscalatedToCommunityEvent {
 }
 
 export namespace EscalationInitiatedEvent {
-  export type InputTuple = [
-    marketId: BytesLike,
-    initiator: AddressLike,
-    proposedOutcome: BigNumberish,
-    bond: BigNumberish
-  ];
-  export type OutputTuple = [
-    marketId: string,
-    initiator: string,
-    proposedOutcome: bigint,
-    bond: bigint
-  ];
+  export type InputTuple = [marketId: BytesLike, initiator: AddressLike];
+  export type OutputTuple = [marketId: string, initiator: string];
   export interface OutputObject {
     marketId: string;
     initiator: string;
-    proposedOutcome: bigint;
-    bond: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1219,11 +1104,10 @@ export namespace EscalationInitiatedEvent {
 }
 
 export namespace EscalationResolvedEvent {
-  export type InputTuple = [marketId: BytesLike, outcome: BigNumberish];
-  export type OutputTuple = [marketId: string, outcome: bigint];
+  export type InputTuple = [marketId: BytesLike];
+  export type OutputTuple = [marketId: string];
   export interface OutputObject {
     marketId: string;
-    outcome: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1232,23 +1116,11 @@ export namespace EscalationResolvedEvent {
 }
 
 export namespace EscalationVoteCastEvent {
-  export type InputTuple = [
-    marketId: BytesLike,
-    voter: AddressLike,
-    support: boolean,
-    amount: BigNumberish
-  ];
-  export type OutputTuple = [
-    marketId: string,
-    voter: string,
-    support: boolean,
-    amount: bigint
-  ];
+  export type InputTuple = [marketId: BytesLike, voter: AddressLike];
+  export type OutputTuple = [marketId: string, voter: string];
   export interface OutputObject {
     marketId: string;
     voter: string;
-    support: boolean;
-    amount: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1279,23 +1151,10 @@ export namespace GovernanceInitializedEvent {
 }
 
 export namespace PanelAssignedEvent {
-  export type InputTuple = [
-    marketId: BytesLike,
-    r1: AddressLike,
-    r2: AddressLike,
-    r3: AddressLike
-  ];
-  export type OutputTuple = [
-    marketId: string,
-    r1: string,
-    r2: string,
-    r3: string
-  ];
+  export type InputTuple = [marketId: BytesLike];
+  export type OutputTuple = [marketId: string];
   export interface OutputObject {
     marketId: string;
-    r1: string;
-    r2: string;
-    r3: string;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1304,11 +1163,10 @@ export namespace PanelAssignedEvent {
 }
 
 export namespace PanelFinalizedEvent {
-  export type InputTuple = [marketId: BytesLike, winningOutcome: BigNumberish];
-  export type OutputTuple = [marketId: string, winningOutcome: bigint];
+  export type InputTuple = [marketId: BytesLike];
+  export type OutputTuple = [marketId: string];
   export interface OutputObject {
     marketId: string;
-    winningOutcome: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1317,20 +1175,11 @@ export namespace PanelFinalizedEvent {
 }
 
 export namespace PanelVoteSubmittedEvent {
-  export type InputTuple = [
-    marketId: BytesLike,
-    resolver: AddressLike,
-    outcome: BigNumberish
-  ];
-  export type OutputTuple = [
-    marketId: string,
-    resolver: string,
-    outcome: bigint
-  ];
+  export type InputTuple = [marketId: BytesLike, resolver: AddressLike];
+  export type OutputTuple = [marketId: string, resolver: string];
   export interface OutputObject {
     marketId: string;
     resolver: string;
-    outcome: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1397,20 +1246,10 @@ export namespace ResolverBlacklistedEvent {
 }
 
 export namespace ResolverRegisteredEvent {
-  export type InputTuple = [
-    resolver: AddressLike,
-    stakeAmount: BigNumberish,
-    tier: BigNumberish
-  ];
-  export type OutputTuple = [
-    resolver: string,
-    stakeAmount: bigint,
-    tier: bigint
-  ];
+  export type InputTuple = [resolver: AddressLike];
+  export type OutputTuple = [resolver: string];
   export interface OutputObject {
     resolver: string;
-    stakeAmount: bigint;
-    tier: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1419,20 +1258,10 @@ export namespace ResolverRegisteredEvent {
 }
 
 export namespace ResolverSlashedEvent {
-  export type InputTuple = [
-    resolver: AddressLike,
-    slashAmount: BigNumberish,
-    strikes: BigNumberish
-  ];
-  export type OutputTuple = [
-    resolver: string,
-    slashAmount: bigint,
-    strikes: bigint
-  ];
+  export type InputTuple = [resolver: AddressLike];
+  export type OutputTuple = [resolver: string];
   export interface OutputObject {
     resolver: string;
-    slashAmount: bigint;
-    strikes: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1466,11 +1295,10 @@ export namespace ResolverUnstakedEvent {
 }
 
 export namespace RewardClaimedEvent {
-  export type InputTuple = [user: AddressLike, amount: BigNumberish];
-  export type OutputTuple = [user: string, amount: bigint];
+  export type InputTuple = [user: AddressLike];
+  export type OutputTuple = [user: string];
   export interface OutputObject {
     user: string;
-    amount: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1479,20 +1307,10 @@ export namespace RewardClaimedEvent {
 }
 
 export namespace RewardEpochFundedEvent {
-  export type InputTuple = [
-    epochId: BigNumberish,
-    lpReward: BigNumberish,
-    traderReward: BigNumberish
-  ];
-  export type OutputTuple = [
-    epochId: bigint,
-    lpReward: bigint,
-    traderReward: bigint
-  ];
+  export type InputTuple = [epochId: BigNumberish];
+  export type OutputTuple = [epochId: bigint];
   export interface OutputObject {
     epochId: bigint;
-    lpReward: bigint;
-    traderReward: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1501,20 +1319,11 @@ export namespace RewardEpochFundedEvent {
 }
 
 export namespace VoteCastEvent {
-  export type InputTuple = [
-    proposalId: BytesLike,
-    voter: AddressLike,
-    support: boolean
-  ];
-  export type OutputTuple = [
-    proposalId: string,
-    voter: string,
-    support: boolean
-  ];
+  export type InputTuple = [proposalId: BytesLike, voter: AddressLike];
+  export type OutputTuple = [proposalId: string, voter: string];
   export interface OutputObject {
     proposalId: string;
     voter: string;
-    support: boolean;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1729,10 +1538,6 @@ export interface FhenixGovernance extends BaseContract {
     "payable"
   >;
 
-  delegatedPower: TypedContractMethod<[arg0: AddressLike], [bigint], "view">;
-
-  delegationAmounts: TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-
   deployer: TypedContractMethod<[], [string], "view">;
 
   depositProtocolFees: TypedContractMethod<[], [void], "payable">;
@@ -1742,10 +1547,6 @@ export interface FhenixGovernance extends BaseContract {
     [void],
     "nonpayable"
   >;
-
-  escalationBonds: TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-
-  escalationVoted: TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
 
   escalations: TypedContractMethod<
     [arg0: BytesLike],
@@ -1852,8 +1653,6 @@ export interface FhenixGovernance extends BaseContract {
     "view"
   >;
 
-  hasVoted: TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
-
   initGovernance: TypedContractMethod<
     [
       guardian1: AddressLike,
@@ -1884,8 +1683,6 @@ export interface FhenixGovernance extends BaseContract {
   panelVoted: TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
 
   proposalCount: TypedContractMethod<[], [bigint], "view">;
-
-  proposalLocks: TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
 
   proposals: TypedContractMethod<
     [arg0: BytesLike],
@@ -1985,8 +1782,6 @@ export interface FhenixGovernance extends BaseContract {
     "view"
   >;
 
-  rewardClaimed: TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
-
   rewardEpochs: TypedContractMethod<
     [arg0: BigNumberish],
     [
@@ -2057,10 +1852,6 @@ export interface FhenixGovernance extends BaseContract {
     "nonpayable"
   >;
 
-  userLPContributions: TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-
-  userTradeVolume: TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-
   vetoProposal: TypedContractMethod<
     [proposalId: BytesLike],
     [void],
@@ -2076,8 +1867,6 @@ export interface FhenixGovernance extends BaseContract {
   >;
 
   voteFor: TypedContractMethod<[proposalId: BytesLike], [void], "payable">;
-
-  voteLocks: TypedContractMethod<[arg0: AddressLike], [bigint], "view">;
 
   withdrawEscalationBond: TypedContractMethod<
     [marketId: BytesLike],
@@ -2284,12 +2073,6 @@ export interface FhenixGovernance extends BaseContract {
     nameOrSignature: "delegateVotes"
   ): TypedContractMethod<[delegate: AddressLike], [void], "payable">;
   getFunction(
-    nameOrSignature: "delegatedPower"
-  ): TypedContractMethod<[arg0: AddressLike], [bigint], "view">;
-  getFunction(
-    nameOrSignature: "delegationAmounts"
-  ): TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-  getFunction(
     nameOrSignature: "deployer"
   ): TypedContractMethod<[], [string], "view">;
   getFunction(
@@ -2298,12 +2081,6 @@ export interface FhenixGovernance extends BaseContract {
   getFunction(
     nameOrSignature: "escalateToCommunity"
   ): TypedContractMethod<[marketId: BytesLike], [void], "nonpayable">;
-  getFunction(
-    nameOrSignature: "escalationBonds"
-  ): TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-  getFunction(
-    nameOrSignature: "escalationVoted"
-  ): TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
   getFunction(
     nameOrSignature: "escalations"
   ): TypedContractMethod<
@@ -2404,9 +2181,6 @@ export interface FhenixGovernance extends BaseContract {
     "view"
   >;
   getFunction(
-    nameOrSignature: "hasVoted"
-  ): TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
-  getFunction(
     nameOrSignature: "initGovernance"
   ): TypedContractMethod<
     [
@@ -2444,9 +2218,6 @@ export interface FhenixGovernance extends BaseContract {
   getFunction(
     nameOrSignature: "proposalCount"
   ): TypedContractMethod<[], [bigint], "view">;
-  getFunction(
-    nameOrSignature: "proposalLocks"
-  ): TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
   getFunction(
     nameOrSignature: "proposals"
   ): TypedContractMethod<
@@ -2551,9 +2322,6 @@ export interface FhenixGovernance extends BaseContract {
     "view"
   >;
   getFunction(
-    nameOrSignature: "rewardClaimed"
-  ): TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
-  getFunction(
     nameOrSignature: "rewardEpochs"
   ): TypedContractMethod<
     [arg0: BigNumberish],
@@ -2617,12 +2385,6 @@ export interface FhenixGovernance extends BaseContract {
     nameOrSignature: "upgradeResolverTier"
   ): TypedContractMethod<[resolver: AddressLike], [void], "nonpayable">;
   getFunction(
-    nameOrSignature: "userLPContributions"
-  ): TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-  getFunction(
-    nameOrSignature: "userTradeVolume"
-  ): TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
-  getFunction(
     nameOrSignature: "vetoProposal"
   ): TypedContractMethod<[proposalId: BytesLike], [void], "nonpayable">;
   getFunction(
@@ -2638,9 +2400,6 @@ export interface FhenixGovernance extends BaseContract {
   getFunction(
     nameOrSignature: "voteFor"
   ): TypedContractMethod<[proposalId: BytesLike], [void], "payable">;
-  getFunction(
-    nameOrSignature: "voteLocks"
-  ): TypedContractMethod<[arg0: AddressLike], [bigint], "view">;
   getFunction(
     nameOrSignature: "withdrawEscalationBond"
   ): TypedContractMethod<[marketId: BytesLike], [void], "nonpayable">;
@@ -2808,7 +2567,7 @@ export interface FhenixGovernance extends BaseContract {
   >;
 
   filters: {
-    "DelegationCreated(address,address,uint128)": TypedContractEvent<
+    "DelegationCreated(address,address)": TypedContractEvent<
       DelegationCreatedEvent.InputTuple,
       DelegationCreatedEvent.OutputTuple,
       DelegationCreatedEvent.OutputObject
@@ -2819,7 +2578,7 @@ export interface FhenixGovernance extends BaseContract {
       DelegationCreatedEvent.OutputObject
     >;
 
-    "DelegationRemoved(address,address,uint128)": TypedContractEvent<
+    "DelegationRemoved(address,address)": TypedContractEvent<
       DelegationRemovedEvent.InputTuple,
       DelegationRemovedEvent.OutputTuple,
       DelegationRemovedEvent.OutputObject
@@ -2830,7 +2589,7 @@ export interface FhenixGovernance extends BaseContract {
       DelegationRemovedEvent.OutputObject
     >;
 
-    "EscalatedToCommunity(bytes32,uint64)": TypedContractEvent<
+    "EscalatedToCommunity(bytes32)": TypedContractEvent<
       EscalatedToCommunityEvent.InputTuple,
       EscalatedToCommunityEvent.OutputTuple,
       EscalatedToCommunityEvent.OutputObject
@@ -2841,7 +2600,7 @@ export interface FhenixGovernance extends BaseContract {
       EscalatedToCommunityEvent.OutputObject
     >;
 
-    "EscalationInitiated(bytes32,address,uint8,uint128)": TypedContractEvent<
+    "EscalationInitiated(bytes32,address)": TypedContractEvent<
       EscalationInitiatedEvent.InputTuple,
       EscalationInitiatedEvent.OutputTuple,
       EscalationInitiatedEvent.OutputObject
@@ -2852,7 +2611,7 @@ export interface FhenixGovernance extends BaseContract {
       EscalationInitiatedEvent.OutputObject
     >;
 
-    "EscalationResolved(bytes32,uint8)": TypedContractEvent<
+    "EscalationResolved(bytes32)": TypedContractEvent<
       EscalationResolvedEvent.InputTuple,
       EscalationResolvedEvent.OutputTuple,
       EscalationResolvedEvent.OutputObject
@@ -2863,7 +2622,7 @@ export interface FhenixGovernance extends BaseContract {
       EscalationResolvedEvent.OutputObject
     >;
 
-    "EscalationVoteCast(bytes32,address,bool,uint128)": TypedContractEvent<
+    "EscalationVoteCast(bytes32,address)": TypedContractEvent<
       EscalationVoteCastEvent.InputTuple,
       EscalationVoteCastEvent.OutputTuple,
       EscalationVoteCastEvent.OutputObject
@@ -2885,7 +2644,7 @@ export interface FhenixGovernance extends BaseContract {
       GovernanceInitializedEvent.OutputObject
     >;
 
-    "PanelAssigned(bytes32,address,address,address)": TypedContractEvent<
+    "PanelAssigned(bytes32)": TypedContractEvent<
       PanelAssignedEvent.InputTuple,
       PanelAssignedEvent.OutputTuple,
       PanelAssignedEvent.OutputObject
@@ -2896,7 +2655,7 @@ export interface FhenixGovernance extends BaseContract {
       PanelAssignedEvent.OutputObject
     >;
 
-    "PanelFinalized(bytes32,uint8)": TypedContractEvent<
+    "PanelFinalized(bytes32)": TypedContractEvent<
       PanelFinalizedEvent.InputTuple,
       PanelFinalizedEvent.OutputTuple,
       PanelFinalizedEvent.OutputObject
@@ -2907,7 +2666,7 @@ export interface FhenixGovernance extends BaseContract {
       PanelFinalizedEvent.OutputObject
     >;
 
-    "PanelVoteSubmitted(bytes32,address,uint8)": TypedContractEvent<
+    "PanelVoteSubmitted(bytes32,address)": TypedContractEvent<
       PanelVoteSubmittedEvent.InputTuple,
       PanelVoteSubmittedEvent.OutputTuple,
       PanelVoteSubmittedEvent.OutputObject
@@ -2962,7 +2721,7 @@ export interface FhenixGovernance extends BaseContract {
       ResolverBlacklistedEvent.OutputObject
     >;
 
-    "ResolverRegistered(address,uint128,uint8)": TypedContractEvent<
+    "ResolverRegistered(address)": TypedContractEvent<
       ResolverRegisteredEvent.InputTuple,
       ResolverRegisteredEvent.OutputTuple,
       ResolverRegisteredEvent.OutputObject
@@ -2973,7 +2732,7 @@ export interface FhenixGovernance extends BaseContract {
       ResolverRegisteredEvent.OutputObject
     >;
 
-    "ResolverSlashed(address,uint128,uint8)": TypedContractEvent<
+    "ResolverSlashed(address)": TypedContractEvent<
       ResolverSlashedEvent.InputTuple,
       ResolverSlashedEvent.OutputTuple,
       ResolverSlashedEvent.OutputObject
@@ -3006,7 +2765,7 @@ export interface FhenixGovernance extends BaseContract {
       ResolverUnstakedEvent.OutputObject
     >;
 
-    "RewardClaimed(address,uint128)": TypedContractEvent<
+    "RewardClaimed(address)": TypedContractEvent<
       RewardClaimedEvent.InputTuple,
       RewardClaimedEvent.OutputTuple,
       RewardClaimedEvent.OutputObject
@@ -3017,7 +2776,7 @@ export interface FhenixGovernance extends BaseContract {
       RewardClaimedEvent.OutputObject
     >;
 
-    "RewardEpochFunded(uint64,uint128,uint128)": TypedContractEvent<
+    "RewardEpochFunded(uint64)": TypedContractEvent<
       RewardEpochFundedEvent.InputTuple,
       RewardEpochFundedEvent.OutputTuple,
       RewardEpochFundedEvent.OutputObject
@@ -3028,7 +2787,7 @@ export interface FhenixGovernance extends BaseContract {
       RewardEpochFundedEvent.OutputObject
     >;
 
-    "VoteCast(bytes32,address,bool)": TypedContractEvent<
+    "VoteCast(bytes32,address)": TypedContractEvent<
       VoteCastEvent.InputTuple,
       VoteCastEvent.OutputTuple,
       VoteCastEvent.OutputObject

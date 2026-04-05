@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "C:\\Users\\Vladislav Klochkov\\Desktop\\veiled-markets-main\\contracts-fhenix\\contracts\\FhenixGovernance.sol": {
-      "lastModificationDate": 1775409327143,
-      "contentHash": "2146807a3d74e10805836c74fdf4f67a",
+      "lastModificationDate": 1775415880140,
+      "contentHash": "3cf846b12fbbc4dd381a99289be3f16f",
       "sourceName": "contracts/FhenixGovernance.sol",
       "solcConfig": {
         "version": "0.8.25",

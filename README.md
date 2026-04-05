@@ -6,7 +6,7 @@
 
 Privacy-preserving prediction market protocol powered by Fully Homomorphic Encryption on Ethereum
 
-[![Live on Sepolia](https://img.shields.io/badge/Live-Sepolia_Testnet-0AD9DC?style=for-the-badge)](https://sepolia.etherscan.io/address/0xF9974E44ae6892944a591DC071B89F4b1a5624b1)
+[![Live on Sepolia](https://img.shields.io/badge/Live-Sepolia_Testnet-0AD9DC?style=for-the-badge)](https://sepolia.etherscan.io/address/0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0)
 [![Fhenix CoFHE](https://img.shields.io/badge/FHE-Fhenix_CoFHE-8B5CF6?style=for-the-badge)](https://www.fhenix.io/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](./LICENSE)
 
@@ -61,8 +61,8 @@ Deployed on **Ethereum Sepolia** with Fhenix CoFHE coprocessor:
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| **FhenixMarkets** | [`0xF9974E44ae6892944a591DC071B89F4b1a5624b1`](https://sepolia.etherscan.io/address/0xF9974E44ae6892944a591DC071B89F4b1a5624b1) | Markets, AMM, trading, resolution |
-| **FhenixGovernance** | [`0x38d8B27Ee4a014D36Fb5a443fB7b2C081328fb2F`](https://sepolia.etherscan.io/address/0x38d8B27Ee4a014D36Fb5a443fB7b2C081328fb2F) | DAO governance, resolver registry, slashing |
+| **FhenixMarkets** | [`0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0`](https://sepolia.etherscan.io/address/0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0) | Markets, AMM, trading, resolution |
+| **FhenixGovernance** | [`0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656`](https://sepolia.etherscan.io/address/0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656) | DAO governance, resolver registry, slashing |
 
 ### FhenixMarkets — Core Functions
 
@@ -201,8 +201,8 @@ npx hardhat run scripts/deploy.ts --network eth-sepolia
 
 ```env
 # Contracts (defaults are pre-filled with deployed addresses)
-VITE_MARKETS_CONTRACT=0xF9974E44ae6892944a591DC071B89F4b1a5624b1
-VITE_GOVERNANCE_CONTRACT=0x38d8B27Ee4a014D36Fb5a443fB7b2C081328fb2F
+VITE_MARKETS_CONTRACT=0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0
+VITE_GOVERNANCE_CONTRACT=0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656
 
 # Privy (wallet authentication)
 VITE_PRIVY_APP_ID=your-privy-app-id
@@ -256,6 +256,6 @@ MIT License — see [LICENSE](./LICENSE)
 
 **Built with Fhenix CoFHE on Ethereum**
 
-[FhenixMarkets Contract](https://sepolia.etherscan.io/address/0xF9974E44ae6892944a591DC071B89F4b1a5624b1) · [FhenixGovernance Contract](https://sepolia.etherscan.io/address/0x38d8B27Ee4a014D36Fb5a443fB7b2C081328fb2F)
+[FhenixMarkets Contract](https://sepolia.etherscan.io/address/0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0) · [FhenixGovernance Contract](https://sepolia.etherscan.io/address/0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656)
 
 </div>

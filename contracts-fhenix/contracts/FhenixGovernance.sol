@@ -160,7 +160,7 @@ contract FhenixGovernance {
     uint256 public proposalCount;
 
     // Vote tracking: keccak256(proposalId, voter) => voted
-    mapping(bytes32 => bool) public hasVoted;
+    mapping(bytes32 => bool) private hasVoted;
 
     // ---- FHE: Encrypted vote weights ----
     // keccak256(proposalId, voter) => encrypted vote amount
@@ -170,18 +170,18 @@ contract FhenixGovernance {
     mapping(bytes32 => euint128) private encVotesAgainst;
 
     // Vote lock tracking: voter => total locked ETH
-    mapping(address => uint128) public voteLocks;
+    mapping(address => uint128) private voteLocks;
     // Per-proposal locks: keccak256(proposalId, voter) => locked amount (plaintext for unlock)
-    mapping(bytes32 => uint128) public proposalLocks;
+    mapping(bytes32 => uint128) private proposalLocks;
 
 
     // Guardian config
     GuardianConfig public guardians;
 
     // Delegation: keccak256(delegator, delegate) => amount
-    mapping(bytes32 => uint128) public delegationAmounts;
+    mapping(bytes32 => uint128) private delegationAmounts;
     // Total delegated power to an address
-    mapping(address => uint128) public delegatedPower;
+    mapping(address => uint128) private delegatedPower;
 
     // Resolver registry
     mapping(address => ResolverProfile) public resolverRegistry;
@@ -216,9 +216,9 @@ contract FhenixGovernance {
     mapping(uint64 => RewardEpoch) public rewardEpochs;
     uint64 public currentEpochId;
     // User contributions: keccak256(user, epochId) => (lpContribution, tradeVolume)
-    mapping(bytes32 => uint128) public userLPContributions;
-    mapping(bytes32 => uint128) public userTradeVolume;
-    mapping(bytes32 => bool)    public rewardClaimed;
+    mapping(bytes32 => uint128) private userLPContributions;
+    mapping(bytes32 => uint128) private userTradeVolume;
+    mapping(bytes32 => bool)    private rewardClaimed;
 
     // Protocol treasury held by governance
     uint128 public treasuryBalance;
@@ -229,26 +229,26 @@ contract FhenixGovernance {
 
     event GovernanceInitialized(address guardian1, address guardian2, address guardian3);
     event ProposalCreated(bytes32 indexed proposalId, address proposer, uint8 proposalType);
-    event VoteCast(bytes32 indexed proposalId, address indexed voter, bool support);
+    event VoteCast(bytes32 indexed proposalId, address indexed voter);
     event VoteFinalized(bytes32 indexed proposalId, uint8 status);
     event ProposalExecuted(bytes32 indexed proposalId);
     event ProposalVetoed(bytes32 indexed proposalId);
 
-    event ResolverRegistered(address indexed resolver, uint128 stakeAmount, uint8 tier);
+    event ResolverRegistered(address indexed resolver);
     event ResolverUnstaked(address indexed resolver);
-    event ResolverSlashed(address indexed resolver, uint128 slashAmount, uint8 strikes);
+    event ResolverSlashed(address indexed resolver);
     event ResolverBlacklisted(address indexed resolver);
     event ResolverTierUpgraded(address indexed resolver, uint8 newTier);
 
-    event PanelAssigned(bytes32 indexed marketId, address r1, address r2, address r3);
-    event PanelVoteSubmitted(bytes32 indexed marketId, address resolver, uint8 outcome);
-    event PanelFinalized(bytes32 indexed marketId, uint8 winningOutcome);
+    event PanelAssigned(bytes32 indexed marketId);
+    event PanelVoteSubmitted(bytes32 indexed marketId, address indexed resolver);
+    event PanelFinalized(bytes32 indexed marketId);
 
-    event DelegationCreated(address indexed delegator, address indexed delegate, uint128 amount);
-    event DelegationRemoved(address indexed delegator, address indexed delegate, uint128 amount);
+    event DelegationCreated(address indexed delegator, address indexed delegate);
+    event DelegationRemoved(address indexed delegator, address indexed delegate);
 
-    event RewardEpochFunded(uint64 epochId, uint128 lpReward, uint128 traderReward);
-    event RewardClaimed(address indexed user, uint128 amount);
+    event RewardEpochFunded(uint64 epochId);
+    event RewardClaimed(address indexed user);
 
     // ========================================================================
     // MODIFIERS
@@ -424,7 +424,7 @@ contract FhenixGovernance {
             encVotesAgainst[proposalId] = newTally;
         }
 
-        emit VoteCast(proposalId, msg.sender, support);
+        emit VoteCast(proposalId, msg.sender);
     }
 
     // ========================================================================
@@ -548,7 +548,7 @@ contract FhenixGovernance {
         delegationAmounts[delKey] += amount;
         delegatedPower[delegate]  += amount;
 
-        emit DelegationCreated(msg.sender, delegate, amount);
+        emit DelegationCreated(msg.sender, delegate);
     }
 
     // ========================================================================
@@ -566,7 +566,7 @@ contract FhenixGovernance {
         (bool sent, ) = payable(msg.sender).call{value: amount}("");
         require(sent, "Transfer failed");
 
-        emit DelegationRemoved(msg.sender, delegate, amount);
+        emit DelegationRemoved(msg.sender, delegate);
     }
 
     // ########################################################################
@@ -596,7 +596,7 @@ contract FhenixGovernance {
             isActive: true
         });
 
-        emit ResolverRegistered(msg.sender, uint128(msg.value), TIER_BRONZE);
+        emit ResolverRegistered(msg.sender);
     }
 
     // ========================================================================
@@ -647,7 +647,7 @@ contract FhenixGovernance {
         // Slashed ETH goes to treasury
         treasuryBalance += slashAmount;
 
-        emit ResolverSlashed(resolver, slashAmount, profile.strikes);
+        emit ResolverSlashed(resolver);
     }
 
     // ========================================================================
@@ -761,7 +761,7 @@ contract FhenixGovernance {
             assignedAt: uint64(block.timestamp)
         });
 
-        emit PanelAssigned(marketId, r1, r2, r3);
+        emit PanelAssigned(marketId);
     }
 
     // ========================================================================
@@ -786,13 +786,13 @@ contract FhenixGovernance {
         panel.votesSubmitted++;
         panel.outcomeVotes[outcome]++;
 
-        emit PanelVoteSubmitted(marketId, msg.sender, outcome);
+        emit PanelVoteSubmitted(marketId, msg.sender);
 
         // Auto-finalize when majority reached
         if (panel.outcomeVotes[outcome] >= PANEL_MAJORITY) {
             panel.finalized = true;
             panel.winningOutcome = outcome;
-            emit PanelFinalized(marketId, outcome);
+            emit PanelFinalized(marketId);
         }
     }
 
@@ -886,14 +886,14 @@ contract FhenixGovernance {
 
     mapping(bytes32 => Escalation) public escalations;
     // keccak256(marketId, voter) => voted in community escalation
-    mapping(bytes32 => bool) public escalationVoted;
+    mapping(bytes32 => bool) private escalationVoted;
     // keccak256(marketId, voter) => bond deposited
-    mapping(bytes32 => uint128) public escalationBonds;
+    mapping(bytes32 => uint128) private escalationBonds;
 
-    event EscalationInitiated(bytes32 indexed marketId, address initiator, uint8 proposedOutcome, uint128 bond);
-    event EscalatedToCommunity(bytes32 indexed marketId, uint64 communityDeadline);
-    event EscalationVoteCast(bytes32 indexed marketId, address voter, bool support, uint128 amount);
-    event EscalationResolved(bytes32 indexed marketId, uint8 outcome);
+    event EscalationInitiated(bytes32 indexed marketId, address indexed initiator);
+    event EscalatedToCommunity(bytes32 indexed marketId);
+    event EscalationVoteCast(bytes32 indexed marketId, address indexed voter);
+    event EscalationResolved(bytes32 indexed marketId);
 
     /// @notice Initiate escalation for a disputed market to governance resolution
     function initiateEscalation(
@@ -916,7 +916,7 @@ contract FhenixGovernance {
             communityDeadline: 0
         });
 
-        emit EscalationInitiated(marketId, msg.sender, proposedOutcome, uint128(msg.value));
+        emit EscalationInitiated(marketId, msg.sender);
     }
 
     /// @notice Escalate to community voting — opens a community vote window
@@ -934,7 +934,7 @@ contract FhenixGovernance {
         esc.status = ESCALATION_COMMUNITY;
         esc.communityDeadline = uint64(block.timestamp) + ESCALATION_WINDOW;
 
-        emit EscalatedToCommunity(marketId, esc.communityDeadline);
+        emit EscalatedToCommunity(marketId);
     }
 
     /// @notice Vote in community escalation (ETH-weighted)
@@ -957,7 +957,7 @@ contract FhenixGovernance {
             esc.votesAgainst += amount;
         }
 
-        emit EscalationVoteCast(marketId, msg.sender, support, amount);
+        emit EscalationVoteCast(marketId, msg.sender);
     }
 
     /// @notice Finalize community escalation and resolve the outcome
@@ -971,10 +971,10 @@ contract FhenixGovernance {
         if (esc.votesFor > esc.votesAgainst) {
             // Community approved the escalation — apply proposed outcome
             governanceResolvedOutcomes[esc.marketId] = esc.proposedOutcome;
-            emit EscalationResolved(marketId, esc.proposedOutcome);
+            emit EscalationResolved(marketId);
         } else {
             // Community rejected — outcome stays as-is
-            emit EscalationResolved(marketId, 0);
+            emit EscalationResolved(marketId);
         }
     }
 
@@ -1024,7 +1024,7 @@ contract FhenixGovernance {
             distributed: false
         });
 
-        emit RewardEpochFunded(currentEpochId, lpReward, traderReward);
+        emit RewardEpochFunded(currentEpochId);
     }
 
     // ========================================================================
@@ -1079,7 +1079,7 @@ contract FhenixGovernance {
         (bool sent, ) = payable(msg.sender).call{value: totalReward}("");
         require(sent, "Transfer failed");
 
-        emit RewardClaimed(msg.sender, totalReward);
+        emit RewardClaimed(msg.sender);
     }
 
     // ########################################################################
