@@ -293,9 +293,18 @@ export function CreateMarketPage() {
 
       // Parse MarketCreated event to get the real on-chain marketId
       const marketCreatedTopic = ethers.id('MarketCreated(bytes32,address,bytes32,uint8,uint64)')
+      console.log('[CreateMarket] Looking for topic:', marketCreatedTopic)
+      console.log('[CreateMarket] Receipt logs count:', receipt.logs.length)
+      receipt.logs.forEach((log: any, i: number) => {
+        console.log(`[CreateMarket] Log[${i}] address=${log.address} topic0=${log.topics[0]}`)
+      })
       const marketCreatedLog = receipt.logs.find((log: any) => log.topics[0] === marketCreatedTopic)
+      console.log('[CreateMarket] Found MarketCreated log:', !!marketCreatedLog)
       const onChainMarketId = marketCreatedLog?.topics[1] || questionHash
       devLog('[CreateMarket] On-chain marketId:', onChainMarketId)
+      if (!marketCreatedLog) {
+        console.error('[CreateMarket] WARNING: MarketCreated event NOT found! Falling back to questionHash. This market will NOT work for trading!')
+      }
 
       let ipfsCid: string | null = null
       if (isPinataAvailable()) {
