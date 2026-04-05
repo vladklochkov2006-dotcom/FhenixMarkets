@@ -645,7 +645,7 @@ export function CreateMarketPage() {
                     {[
                       'Market creators earn 0.5% of all trading volume',
                       'Initial liquidity seeds the AMM pool and cannot be withdrawn until resolution',
-                      'Markets require ZK proof generation (30-60 seconds)',
+                      'Markets use FHE encryption for private balances (may take 30-60 seconds)',
                       'Disputes are resolved by the community governance process',
                     ].map((note, i) => (
                       <li key={i} className="flex items-start gap-2.5">
