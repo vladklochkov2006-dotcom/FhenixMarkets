@@ -16,6 +16,8 @@ export type { Utils } from "./@fhenixprotocol/cofhe-contracts/ICofhe.sol/Utils";
 export { Utils__factory } from "./factories/@fhenixprotocol/cofhe-contracts/ICofhe.sol/Utils__factory";
 export type { SafeCast } from "./@openzeppelin/contracts/utils/math/SafeCast";
 export { SafeCast__factory } from "./factories/@openzeppelin/contracts/utils/math/SafeCast__factory";
+export type { ReentrancyGuard } from "./@openzeppelin/contracts/utils/ReentrancyGuard";
+export { ReentrancyGuard__factory } from "./factories/@openzeppelin/contracts/utils/ReentrancyGuard__factory";
 export type { Strings } from "./@openzeppelin/contracts/utils/Strings";
 export { Strings__factory } from "./factories/@openzeppelin/contracts/utils/Strings__factory";
 export type { FhenixGovernance } from "./contracts/FhenixGovernance.sol/FhenixGovernance";

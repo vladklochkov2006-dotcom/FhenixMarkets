@@ -15,8 +15,9 @@ pragma solidity ^0.8.20;
 // ============================================================================
 
 import {FHE, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract FhenixMarkets {
+contract FhenixMarkets is ReentrancyGuard {
 
     // ========================================================================
     // CONSTANTS
@@ -250,22 +251,25 @@ contract FhenixMarkets {
     // FHE HELPERS — safe add/sub with initialization check
     // ========================================================================
 
-    function _fheAdd(euint128 current, uint128 amount) internal returns (euint128) {
+    function _fheAdd(euint128 current, uint128 amount, address owner) internal returns (euint128) {
         euint128 enc = FHE.asEuint128(uint256(amount));
         if (FHE.isInitialized(current)) {
             euint128 result = FHE.add(current, enc);
             FHE.allowThis(result);
+            FHE.allow(result, owner);
             return result;
         } else {
             FHE.allowThis(enc);
+            FHE.allow(enc, owner);
             return enc;
         }
     }
 
-    function _fheSub(euint128 current, uint128 amount) internal returns (euint128) {
+    function _fheSub(euint128 current, uint128 amount, address owner) internal returns (euint128) {
         euint128 enc = FHE.asEuint128(uint256(amount));
         euint128 result = FHE.sub(current, enc);
         FHE.allowThis(result);
+        FHE.allow(result, owner);
         return result;
     }
 
@@ -335,7 +339,7 @@ contract FhenixMarkets {
 
         // Encrypt LP position for creator (private)
         bytes32 lpKey = _lpKey(marketId, msg.sender);
-        encLPBalances[lpKey] = _fheAdd(encLPBalances[lpKey], initialLiquidity);
+        encLPBalances[lpKey] = _fheAdd(encLPBalances[lpKey], initialLiquidity, msg.sender);
         marketCount++;
 
         emit MarketCreated(
@@ -400,7 +404,7 @@ contract FhenixMarkets {
 
         // ---- FHE: Add shares to encrypted balance (PRIVATE) ----
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheAdd(encShareBalances[key], sharesOut);
+        encShareBalances[key] = _fheAdd(encShareBalances[key], sharesOut, msg.sender);
 
         emit SharesBought(marketId, msg.sender);
     }
@@ -420,7 +424,7 @@ contract FhenixMarkets {
         uint8   outcome,
         uint128 sharesToSell,
         uint128 minTokensOut
-    ) external marketExists(marketId) {
+    ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
         require(market.status == MARKET_STATUS_ACTIVE, "Not active");
         require(block.timestamp <= market.deadline, "Expired");
@@ -457,9 +461,9 @@ contract FhenixMarkets {
         totalSharesIssued[oKey] -= sharesToSell;
 
         // ---- FHE: Subtract shares from encrypted balance (PRIVATE) ----
-        // FHE.sub reverts on underflow → insufficient balance check
+        // NOTE: FHE.sub on encrypted data — underflow checked by plaintext guards above
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToSell);
+        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToSell, msg.sender);
 
         // Transfer ETH to seller
         (bool sent, ) = payable(msg.sender).call{value: netTokens}("");
@@ -513,7 +517,7 @@ contract FhenixMarkets {
 
         // ---- FHE: Add LP shares to encrypted balance (PRIVATE) ----
         bytes32 key = _lpKey(marketId, msg.sender);
-        encLPBalances[key] = _fheAdd(encLPBalances[key], lpShares);
+        encLPBalances[key] = _fheAdd(encLPBalances[key], lpShares, msg.sender);
 
         emit LiquidityAdded(marketId, msg.sender);
     }
@@ -525,7 +529,7 @@ contract FhenixMarkets {
     function withdrawLiquidity(
         bytes32 marketId,
         uint128 lpSharesToWithdraw
-    ) external marketExists(marketId) {
+    ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
         require(
             market.status == MARKET_STATUS_RESOLVED,
@@ -554,9 +558,9 @@ contract FhenixMarkets {
         marketCredits[marketId] -= tokensOut;
 
         // ---- FHE: Subtract LP shares (PRIVATE) ----
-        // FHE.sub reverts on underflow → insufficient balance check
+        // NOTE: FHE.sub on encrypted data — underflow checked by plaintext guards above
         bytes32 key = _lpKey(marketId, msg.sender);
-        encLPBalances[key] = _fheSub(encLPBalances[key], lpSharesToWithdraw);
+        encLPBalances[key] = _fheSub(encLPBalances[key], lpSharesToWithdraw, msg.sender);
 
         (bool sent, ) = payable(msg.sender).call{value: tokensOut}("");
         require(sent, "ETH transfer failed");
@@ -776,7 +780,7 @@ contract FhenixMarkets {
     function redeemShares(
         bytes32 marketId,
         uint128 sharesToRedeem
-    ) external marketExists(marketId) {
+    ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
         require(market.status == MARKET_STATUS_RESOLVED, "Not resolved");
 
@@ -801,9 +805,9 @@ contract FhenixMarkets {
         totalSharesIssued[oKey] -= sharesToRedeem;
 
         // ---- FHE: Subtract redeemed shares (PRIVATE) ----
-        // FHE.sub reverts on underflow → insufficient balance check
+        // NOTE: FHE.sub on encrypted data — underflow checked by plaintext guards above
         bytes32 key = _shareKey(marketId, msg.sender, winningOutcome);
-        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToRedeem);
+        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToRedeem, msg.sender);
 
         (bool sent, ) = payable(msg.sender).call{value: payout}("");
         require(sent, "ETH transfer failed");
@@ -819,7 +823,7 @@ contract FhenixMarkets {
         bytes32 marketId,
         uint8   outcome,
         uint128 sharesToRefund
-    ) external marketExists(marketId) {
+    ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
         require(market.status == MARKET_STATUS_CANCELLED, "Not cancelled");
         require(outcome >= 1 && outcome <= market.numOutcomes, "Invalid");
@@ -840,7 +844,7 @@ contract FhenixMarkets {
 
         // ---- FHE: Subtract shares (PRIVATE) ----
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToRefund);
+        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToRefund, msg.sender);
 
         (bool sent, ) = payable(msg.sender).call{value: refundAmount}("");
         require(sent, "ETH transfer failed");
@@ -855,7 +859,7 @@ contract FhenixMarkets {
     function claimLPRefund(
         bytes32 marketId,
         uint128 lpSharesToRefund
-    ) external marketExists(marketId) {
+    ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
         require(market.status == MARKET_STATUS_CANCELLED, "Not cancelled");
         require(lpSharesToRefund > 0, "Zero");
@@ -872,7 +876,7 @@ contract FhenixMarkets {
         marketCredits[marketId] -= refund;
 
         // ---- FHE: Subtract LP shares (PRIVATE) ----
-        encLPBalances[key] = _fheSub(encLPBalances[key], lpSharesToRefund);
+        encLPBalances[key] = _fheSub(encLPBalances[key], lpSharesToRefund, msg.sender);
 
         (bool sent, ) = payable(msg.sender).call{value: refund}("");
         require(sent, "ETH transfer failed");
@@ -1354,6 +1358,20 @@ contract FhenixMarkets {
         if (outcome == 3) return tally.outcome3Bonds;
         if (outcome == 4) return tally.outcome4Bonds;
         return 0;
+    }
+
+    // ========================================================================
+    // VIEW: Encrypted balance getters (for cofhejs permit/sealOutput)
+    // ========================================================================
+
+    /// @notice Returns encrypted share balance handle for the caller
+    function getEncShareBalance(bytes32 marketId, uint8 outcome) external view returns (euint128) {
+        return encShareBalances[_shareKey(marketId, msg.sender, outcome)];
+    }
+
+    /// @notice Returns encrypted LP balance handle for the caller
+    function getEncLPBalance(bytes32 marketId) external view returns (euint128) {
+        return encLPBalances[_lpKey(marketId, msg.sender)];
     }
 
     // ========================================================================

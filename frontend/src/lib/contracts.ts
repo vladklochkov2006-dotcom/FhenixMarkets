@@ -17,8 +17,8 @@ import { devLog, devWarn } from './logger'
 // ADDRESSES & CHAIN
 // ============================================================================
 
-export const FHENIX_MARKETS_ADDRESS = '0x38e99fD600dA4c169606Bb9c158AA917325aF6BA'
-export const FHENIX_GOVERNANCE_ADDRESS = '0xc7dcC0d57C73842B111A06D56a58B951588DD914'
+export const FHENIX_MARKETS_ADDRESS = '0xF9974E44ae6892944a591DC071B89F4b1a5624b1'
+export const FHENIX_GOVERNANCE_ADDRESS = '0x38d8B27Ee4a014D36Fb5a443fB7b2C081328fb2F'
 export const SEPOLIA_CHAIN_ID = 11155111
 export const SEPOLIA_RPC_URL = 'https://ethereum-sepolia.publicnode.com'
 
@@ -64,8 +64,8 @@ export const MARKET_STATUS = {
 
 export const FEES = {
   PROTOCOL_FEE_BPS: 50,      // 0.5%
-  CREATOR_FEE_BPS: 100,      // 1%
-  LP_FEE_BPS: 200,           // 2%
+  CREATOR_FEE_BPS: 50,       // 0.5%
+  LP_FEE_BPS: 100,           // 1.0%
   MIN_VOTER_BOND: ethers.parseEther('0.001'),
   DISPUTE_MULTIPLIER: 3,
 } as const

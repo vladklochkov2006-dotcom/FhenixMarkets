@@ -174,6 +174,7 @@ contract FhenixGovernance {
     // Per-proposal locks: keccak256(proposalId, voter) => locked amount (plaintext for unlock)
     mapping(bytes32 => uint128) public proposalLocks;
 
+
     // Guardian config
     GuardianConfig public guardians;
 
@@ -409,6 +410,7 @@ contract FhenixGovernance {
         // ---- FHE: Encrypt vote weight (PRIVATE) ----
         euint128 encAmount = FHE.asEuint128(uint256(amount));
         FHE.allowThis(encAmount);
+        FHE.allow(encAmount, msg.sender);
         encVoteWeights[voteKey] = encAmount;
 
         // Add to encrypted tally — nobody sees individual weights
@@ -451,14 +453,16 @@ contract FhenixGovernance {
     // T5. FINALIZE VOTE — Decrypt tallies and determine outcome
     // ========================================================================
 
+    // Finalize vote — uses getDecryptResultSafe to handle async CoFHE decryption
     function finalizeVote(bytes32 proposalId) external whenInitialized {
         Proposal storage prop = proposals[proposalId];
         require(prop.status == STATUS_ACTIVE, "Not active");
         require(block.timestamp > prop.votingDeadline, "Voting open");
 
-        // ---- FHE: Decrypt the encrypted tallies via CoFHE ----
-        uint128 totalFor     = FHE.getDecryptResult(encVotesFor[proposalId]);
-        uint128 totalAgainst = FHE.getDecryptResult(encVotesAgainst[proposalId]);
+        // ---- FHE: Read decrypted tallies from CoFHE (safe version) ----
+        (uint128 totalFor, bool forDecrypted) = FHE.getDecryptResultSafe(encVotesFor[proposalId]);
+        (uint128 totalAgainst, bool againstDecrypted) = FHE.getDecryptResultSafe(encVotesAgainst[proposalId]);
+        require(forDecrypted && againstDecrypted, "Decryption pending, try again later");
 
         prop.votesFor     = totalFor;
         prop.votesAgainst = totalAgainst;

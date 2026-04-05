@@ -167,6 +167,8 @@ export interface FhenixMarketsInterface extends Interface {
       | "disputeResolution"
       | "executeTreasuryProposal"
       | "finalizeVotes"
+      | "getEncLPBalance"
+      | "getEncShareBalance"
       | "getMarket"
       | "getPool"
       | "getPrices"
@@ -358,6 +360,14 @@ export interface FhenixMarketsInterface extends Interface {
   encodeFunctionData(
     functionFragment: "finalizeVotes",
     values: [BytesLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "getEncLPBalance",
+    values: [BytesLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "getEncShareBalance",
+    values: [BytesLike, BigNumberish]
   ): string;
   encodeFunctionData(
     functionFragment: "getMarket",
@@ -562,6 +572,14 @@ export interface FhenixMarketsInterface extends Interface {
   ): Result;
   decodeFunctionResult(
     functionFragment: "finalizeVotes",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "getEncLPBalance",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "getEncShareBalance",
     data: BytesLike
   ): Result;
   decodeFunctionResult(functionFragment: "getMarket", data: BytesLike): Result;
@@ -1084,6 +1102,14 @@ export interface FhenixMarkets extends BaseContract {
     "nonpayable"
   >;
 
+  getEncLPBalance: TypedContractMethod<[marketId: BytesLike], [string], "view">;
+
+  getEncShareBalance: TypedContractMethod<
+    [marketId: BytesLike, outcome: BigNumberish],
+    [string],
+    "view"
+  >;
+
   getMarket: TypedContractMethod<
     [marketId: BytesLike],
     [FhenixMarkets.MarketStructOutput],
@@ -1426,6 +1452,16 @@ export interface FhenixMarkets extends BaseContract {
   getFunction(
     nameOrSignature: "finalizeVotes"
   ): TypedContractMethod<[marketId: BytesLike], [void], "nonpayable">;
+  getFunction(
+    nameOrSignature: "getEncLPBalance"
+  ): TypedContractMethod<[marketId: BytesLike], [string], "view">;
+  getFunction(
+    nameOrSignature: "getEncShareBalance"
+  ): TypedContractMethod<
+    [marketId: BytesLike, outcome: BigNumberish],
+    [string],
+    "view"
+  >;
   getFunction(
     nameOrSignature: "getMarket"
   ): TypedContractMethod<
