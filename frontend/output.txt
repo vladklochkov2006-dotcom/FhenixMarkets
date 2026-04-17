@@ -1,0 +1,11 @@
+Connecting to Supabase...
+Connecting to Sepolia RPC...
+Current Sepolia block timestamp: 1776456624
+Current Date: 17.04.2026, 23:10:24
+
+Checking market: Will Bitcoin (BTC) reach $150,000 before the end of 2026? (0x6bec9153cd684b5c89e17cb88e860c3723859b6e5b50ea4a386addf254b52af6)
+Supabase Deadline: null
+Supabase Deadline Date: 01.01.1970, 03:00:00
+On-chain Deadline: 0
+On-chain Date: 01.01.1970, 03:00:00
+Expired? (block.timestamp > deadline): true
