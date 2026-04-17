@@ -1,0 +1,23 @@
+block.timestamp: 1776457236 → 17.04.2026, 23:20:36
+Wallet: 0xd5C9B9a6E16112B8985280c07462E3b358C3844F
+Balance: 0.444849019964457771 ETH
+
+--- Cleaning old Supabase entries ---
+Deleted 1 old market(s) from Supabase ✓
+
+--- Creating market on-chain ---
+Question: Will Ethereum (ETH) reach $5,000 before December 31, 2026?
+Deadline: 17.05.2026
+Resolution: 24.05.2026
+TX sent: 0x91bf458a7d1f11a2e2b3576a502dd464930b4a2f09b6fa058588cefd57c4881f
+Confirmed ✓  block: 10679890
+Market ID: 0x026223796fea46df6d370394228af21ba3860558e4e3c0a22f3e397b7245b8a6
+
+--- Saving to Supabase ---
+❌ Supabase insert failed: invalid input syntax for type bigint: "0.01"
+
+=== SUCCESS ===
+Market: Will Ethereum (ETH) reach $5,000 before December 31, 2026?
+ID: 0x026223796fea46df6d370394228af21ba3860558e4e3c0a22f3e397b7245b8a6
+TX: 0x91bf458a7d1f11a2e2b3576a502dd464930b4a2f09b6fa058588cefd57c4881f
+Expires: 17.05.2026
