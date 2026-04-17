@@ -210,6 +210,7 @@ export interface FhenixGovernanceInterface extends Interface {
       | "committeeVoted"
       | "createProposal"
       | "currentEpochId"
+      | "decryptionRequested"
       | "delegateVotes"
       | "deployer"
       | "depositProtocolFees"
@@ -238,6 +239,7 @@ export interface FhenixGovernanceInterface extends Interface {
       | "proposals"
       | "recordContribution"
       | "registerResolver"
+      | "requestVoteDecryption"
       | "resolverPanels"
       | "resolverRegistry"
       | "rewardEpochs"
@@ -505,6 +507,10 @@ export interface FhenixGovernanceInterface extends Interface {
     values?: undefined
   ): string;
   encodeFunctionData(
+    functionFragment: "decryptionRequested",
+    values: [BytesLike]
+  ): string;
+  encodeFunctionData(
     functionFragment: "delegateVotes",
     values: [AddressLike]
   ): string;
@@ -606,6 +612,10 @@ export interface FhenixGovernanceInterface extends Interface {
   encodeFunctionData(
     functionFragment: "registerResolver",
     values?: undefined
+  ): string;
+  encodeFunctionData(
+    functionFragment: "requestVoteDecryption",
+    values: [BytesLike]
   ): string;
   encodeFunctionData(
     functionFragment: "resolverPanels",
@@ -892,6 +902,10 @@ export interface FhenixGovernanceInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(
+    functionFragment: "decryptionRequested",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
     functionFragment: "delegateVotes",
     data: BytesLike
   ): Result;
@@ -983,6 +997,10 @@ export interface FhenixGovernanceInterface extends Interface {
   ): Result;
   decodeFunctionResult(
     functionFragment: "registerResolver",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
+    functionFragment: "requestVoteDecryption",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -1532,6 +1550,12 @@ export interface FhenixGovernance extends BaseContract {
 
   currentEpochId: TypedContractMethod<[], [bigint], "view">;
 
+  decryptionRequested: TypedContractMethod<
+    [arg0: BytesLike],
+    [boolean],
+    "view"
+  >;
+
   delegateVotes: TypedContractMethod<
     [delegate: AddressLike],
     [void],
@@ -1732,6 +1756,12 @@ export interface FhenixGovernance extends BaseContract {
   >;
 
   registerResolver: TypedContractMethod<[], [void], "payable">;
+
+  requestVoteDecryption: TypedContractMethod<
+    [proposalId: BytesLike],
+    [void],
+    "nonpayable"
+  >;
 
   resolverPanels: TypedContractMethod<
     [arg0: BytesLike],
@@ -2070,6 +2100,9 @@ export interface FhenixGovernance extends BaseContract {
     nameOrSignature: "currentEpochId"
   ): TypedContractMethod<[], [bigint], "view">;
   getFunction(
+    nameOrSignature: "decryptionRequested"
+  ): TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
+  getFunction(
     nameOrSignature: "delegateVotes"
   ): TypedContractMethod<[delegate: AddressLike], [void], "payable">;
   getFunction(
@@ -2270,6 +2303,9 @@ export interface FhenixGovernance extends BaseContract {
   getFunction(
     nameOrSignature: "registerResolver"
   ): TypedContractMethod<[], [void], "payable">;
+  getFunction(
+    nameOrSignature: "requestVoteDecryption"
+  ): TypedContractMethod<[proposalId: BytesLike], [void], "nonpayable">;
   getFunction(
     nameOrSignature: "resolverPanels"
   ): TypedContractMethod<

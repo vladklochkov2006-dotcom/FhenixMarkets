@@ -112,6 +112,54 @@ export async function createTestMarket(
     }
   );
 
+
   const parsed = markets.interface.parseLog(event);
   return parsed!.args[0] as string; // marketId
+}
+
+/**
+ * Helper: execute a full unshield shares flow in test environment
+ */
+export async function unshieldShares(
+  markets: any,
+  marketId: string,
+  outcome: number,
+  amount: bigint,
+  signer: any
+) {
+  const tx = await markets.connect(signer).requestUnshieldShares(marketId, outcome, amount);
+  const receipt = await tx.wait();
+  const event = receipt.logs.find((log: any) => {
+    try {
+      return markets.interface.parseLog(log)?.name === "UnshieldRequested";
+    } catch {
+      return false;
+    }
+  });
+  const parsed = markets.interface.parseLog(event);
+  const reqId = parsed!.args[0];
+  await markets.connect(signer).executeUnshield(reqId);
+}
+
+/**
+ * Helper: execute a full unshield LP flow in test environment
+ */
+export async function unshieldLP(
+  markets: any,
+  marketId: string,
+  amount: bigint,
+  signer: any
+) {
+  const tx = await markets.connect(signer).requestUnshieldLP(marketId, amount);
+  const receipt = await tx.wait();
+  const event = receipt.logs.find((log: any) => {
+    try {
+      return markets.interface.parseLog(log)?.name === "UnshieldRequested";
+    } catch {
+      return false;
+    }
+  });
+  const parsed = markets.interface.parseLog(event);
+  const reqId = parsed!.args[0];
+  await markets.connect(signer).executeUnshield(reqId);
 }

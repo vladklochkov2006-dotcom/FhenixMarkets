@@ -1,0 +1,43 @@
+﻿node.exe : [1m[31mTyp
+eError:[39m[22m Membe
+r "decrypt" not found o
+r not visible after arg
+ument-dependent lookup 
+in type(library FHE).
+строка:1 знак:1
++ & "C:\Program Files\n
+odejs/node.exe" "C:\Pro
+gram Files\nodejs/node_
+mo ...
++ ~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
+~~
+    + CategoryInfo     
+         : NotSpecifi  
+  ed: ([1m[31mType   
+ Er...e(library FHE    
+).:String) [], Rem    o
+teException
+    + FullyQualifiedEr 
+   rorId : NativeComm  
+  andError
+ 
+   --> contracts/Fhenix
+Governance.sol:466:9:
+    |
+466 |         FHE.decry
+pt(encVotesFor[proposal
+Id]);
+    |         ^^^^^^^^^
+^^
+
+
+[31m[1mError[22m[39
+m [31m[1mHH600:[22m
+[39m Compilation failed
+
+For more info go to htt
+ps://v2.hardhat.org/HH6
+00 or run Hardhat with 
+--show-stack-traces

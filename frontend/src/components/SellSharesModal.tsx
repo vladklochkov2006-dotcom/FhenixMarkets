@@ -4,7 +4,7 @@ import { useState, useMemo } from 'react'
 import { type Market } from '@/lib/store'
 import { cn, formatCredits, getTokenSymbol } from '@/lib/utils'
 import { devWarn } from '@/lib/logger'
-import { sellShares as contractSellShares, fetchMarket, parseEth, parseContractError, ensureSepoliaNetwork, MARKET_STATUS } from '@/lib/contracts'
+import { sellShares as contractSellShares, fetchMarket, parseEth, parseContractError, ensureSepoliaNetwork, MARKET_STATUS, getPublicShareBalance, requestUnshieldShares, executeUnshield } from '@/lib/contracts'
 import {
   calculateSellSharesNeeded,
   calculateSellNetTokens,
@@ -14,6 +14,8 @@ import {
   type AMMReserves,
 } from '@/lib/amm'
 import { TransactionLink } from './TransactionLink'
+import { usePrivy } from '@privy-io/react-auth'
+import { useEffect } from 'react'
 
 interface SellSharesModalProps {
   isOpen: boolean
@@ -22,7 +24,7 @@ interface SellSharesModalProps {
   market: Market
 }
 
-type SellStep = 'input' | 'success'
+type SellStep = 'input' | 'unshielding' | 'success'
 
 export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSharesModalProps) {
   // Contract calls via contracts.ts
@@ -33,7 +35,9 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
   const [isSelling, setIsSelling] = useState(false)
   const [transactionId, setTransactionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [publicShares, setPublicShares] = useState(0n)
 
+  const { user } = usePrivy()
   const tokenSymbol = getTokenSymbol('ETH')
 
   // Build reserves from market data
@@ -56,6 +60,13 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
     const qtyMatch = shareRecord.match(/quantity:\s*(\d+)u128/)
     return qtyMatch ? BigInt(qtyMatch[1]) : 0n
   }, [shareRecord])
+
+  useEffect(() => {
+    const addr = user?.wallet?.address
+    if (isOpen && addr && market.id) {
+      getPublicShareBalance(market.id, addr, shareOutcome).then(setPublicShares).catch(() => setPublicShares(0n))
+    }
+  }, [isOpen, user?.wallet?.address, market.id, shareOutcome])
 
   // Maximum tokens the user can withdraw with their available shares
   const maxTokens = useMemo(() => {
@@ -114,7 +125,7 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
         }
       } catch (validationErr) {
         if (validationErr instanceof Error &&
-            (validationErr.message.includes('not open') || validationErr.message.includes('deadline'))) {
+          (validationErr.message.includes('not open') || validationErr.message.includes('deadline'))) {
           throw validationErr
         }
         devWarn('Pre-validation skipped (network error):', validationErr)
@@ -127,6 +138,15 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
       const outcomeIndex = shareOutcome
       const sharesToSell = sellPreview.maxSharesUsed
       const minTokensOut = tokensDesiredWei
+
+      if (publicShares < sharesToSell) {
+        setStep('unshielding')
+        const needToUnshield = sharesToSell - publicShares
+        const { reqId } = await requestUnshieldShares(market.id, outcomeIndex, needToUnshield)
+        await executeUnshield(reqId)
+
+        // Mock unshield successful, so state is locally consistent for the imminent execution.
+      }
 
       const receipt = await contractSellShares(
         market.id,
@@ -363,10 +383,23 @@ export function SellSharesModal({ isOpen, onClose, shareRecord, market }: SellSh
                         ) : (
                           <>
                             <TrendingDown className="w-5 h-5" />
-                            <span>Sell Shares</span>
+                            {sellPreview && publicShares < sellPreview.maxSharesUsed ? <span>Unshield & Sell</span> : <span>Sell Shares</span>}
                           </>
                         )}
                       </button>
+                    </motion.div>
+                  )}
+
+                  {step === 'unshielding' && (
+                    <motion.div
+                      key="unshielding"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="text-center py-6"
+                    >
+                      <Loader2 className="w-16 h-16 animate-spin text-no-400 mx-auto mb-6" />
+                      <h3 className="text-2xl font-bold text-white mb-2">Unshielding Shares...</h3>
+                      <p className="text-surface-400 mb-6">Decrypting shares via CoFHE Coprocessor before selling</p>
                     </motion.div>
                   )}
 

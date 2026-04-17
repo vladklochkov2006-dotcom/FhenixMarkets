@@ -15,6 +15,7 @@ pragma solidity ^0.8.20;
 // ============================================================================
 
 import {FHE, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {ITaskManager} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 
 interface IFhenixMarkets {
     function markets(bytes32 marketId) external view returns (
@@ -410,7 +411,7 @@ contract FhenixGovernance {
         // ---- FHE: Encrypt vote weight (PRIVATE) ----
         euint128 encAmount = FHE.asEuint128(uint256(amount));
         FHE.allowThis(encAmount);
-        FHE.allow(encAmount, msg.sender);
+        FHE.allowSender(encAmount);
         encVoteWeights[voteKey] = encAmount;
 
         // Add to encrypted tally — nobody sees individual weights
@@ -450,6 +451,24 @@ contract FhenixGovernance {
     }
 
     // ========================================================================
+    // T4b. REQUEST VOTE DECRYPTION
+    // ========================================================================
+
+    mapping(bytes32 => bool) public decryptionRequested;
+
+    function requestVoteDecryption(bytes32 proposalId) external whenInitialized {
+        Proposal storage prop = proposals[proposalId];
+        require(prop.status == STATUS_ACTIVE, "Not active");
+        require(block.timestamp > prop.votingDeadline, "Voting open");
+        require(!decryptionRequested[proposalId], "Already requested");
+
+        decryptionRequested[proposalId] = true;
+
+        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(euint128.unwrap(encVotesFor[proposalId])), msg.sender);
+        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(euint128.unwrap(encVotesAgainst[proposalId])), msg.sender);
+    }
+
+    // ========================================================================
     // T5. FINALIZE VOTE — Decrypt tallies and determine outcome
     // ========================================================================
 
@@ -458,6 +477,7 @@ contract FhenixGovernance {
         Proposal storage prop = proposals[proposalId];
         require(prop.status == STATUS_ACTIVE, "Not active");
         require(block.timestamp > prop.votingDeadline, "Voting open");
+        require(decryptionRequested[proposalId], "Decryption not requested");
 
         // ---- FHE: Read decrypted tallies from CoFHE (safe version) ----
         (uint128 totalFor, bool forDecrypted) = FHE.getDecryptResultSafe(encVotesFor[proposalId]);

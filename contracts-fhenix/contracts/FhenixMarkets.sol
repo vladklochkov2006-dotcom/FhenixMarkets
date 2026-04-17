@@ -15,6 +15,7 @@ pragma solidity ^0.8.20;
 // ============================================================================
 
 import {FHE, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {ITaskManager} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract FhenixMarkets is ReentrancyGuard {
@@ -156,6 +157,25 @@ contract FhenixMarkets is ReentrancyGuard {
     mapping(bytes32 => uint128) private totalSharesIssued; // keccak256(marketId, outcome)
 
     // ========================================================================
+    // STATE — Public Plaintext Balances & Unshielding
+    // ========================================================================
+
+    mapping(bytes32 => uint128) public publicShareBalances; // keccak256(marketId, user, outcome)
+    mapping(bytes32 => uint128) public publicLPBalances;    // keccak256(marketId, user)
+
+    struct UnshieldRequest {
+        bytes32 marketId;
+        address user;
+        uint8   outcome;     // 0 = LP shares, 1-4 = outcome shares
+        uint128 amount;
+        bool    executed;
+    }
+
+    uint256 public nextUnshieldId;
+    mapping(uint256 => UnshieldRequest) public unshieldRequests;
+    mapping(uint256 => ebool) private encUnshieldStatus;
+
+    // ========================================================================
     // EVENTS
     // ========================================================================
 
@@ -166,6 +186,9 @@ contract FhenixMarkets is ReentrancyGuard {
         uint8   numOutcomes,
         uint64  deadline
     );
+
+    event UnshieldRequested(uint256 indexed requestId, address indexed user, bytes32 marketId, uint8 outcome, uint128 amount);
+    event UnshieldExecuted(uint256 indexed requestId, bool successful);
 
     // Privacy-preserving events: no outcome, amount, or share counts leaked.
     // Only marketId + address are emitted so the frontend can index activity.
@@ -215,7 +238,7 @@ contract FhenixMarkets is ReentrancyGuard {
     }
 
     modifier marketExists(bytes32 marketId) {
-        require(markets[marketId].creator != address(0), "Market not found");
+        require(markets[marketId].creator != address(0));
         _;
     }
 
@@ -251,26 +274,18 @@ contract FhenixMarkets is ReentrancyGuard {
     // FHE HELPERS — safe add/sub with initialization check
     // ========================================================================
 
-    function _fheAdd(euint128 current, uint128 amount, address owner) internal returns (euint128) {
+    function _fheAdd(euint128 current, uint128 amount) internal returns (euint128) {
         euint128 enc = FHE.asEuint128(uint256(amount));
         if (FHE.isInitialized(current)) {
             euint128 result = FHE.add(current, enc);
             FHE.allowThis(result);
-            FHE.allow(result, owner);
+            FHE.allowSender(result);
             return result;
         } else {
             FHE.allowThis(enc);
-            FHE.allow(enc, owner);
+            FHE.allowSender(enc);
             return enc;
         }
-    }
-
-    function _fheSub(euint128 current, uint128 amount, address owner) internal returns (euint128) {
-        euint128 enc = FHE.asEuint128(uint256(amount));
-        euint128 result = FHE.sub(current, enc);
-        FHE.allowThis(result);
-        FHE.allow(result, owner);
-        return result;
     }
 
     // ========================================================================
@@ -285,10 +300,10 @@ contract FhenixMarkets is ReentrancyGuard {
         uint64  resolutionDeadline,
         address resolver
     ) external payable returns (bytes32) {
-        require(numOutcomes >= 2 && numOutcomes <= 4, "2-4 outcomes");
+        require(numOutcomes >= 2 && numOutcomes <= 4);
         require(msg.value >= MIN_LIQUIDITY, "Min liquidity");
         require(deadline > block.timestamp, "Deadline in future");
-        require(resolutionDeadline > deadline, "Resolution after deadline");
+        require(resolutionDeadline > deadline);
 
         uint128 initialLiquidity = uint128(msg.value);
 
@@ -301,7 +316,7 @@ contract FhenixMarkets is ReentrancyGuard {
             block.timestamp
         ));
 
-        require(markets[marketId].creator == address(0), "Market exists");
+        require(markets[marketId].creator == address(0));
 
         // Store market metadata (public)
         markets[marketId] = Market({
@@ -339,7 +354,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
         // Encrypt LP position for creator (private)
         bytes32 lpKey = _lpKey(marketId, msg.sender);
-        encLPBalances[lpKey] = _fheAdd(encLPBalances[lpKey], initialLiquidity, msg.sender);
+        encLPBalances[lpKey] = _fheAdd(encLPBalances[lpKey], initialLiquidity);
         marketCount++;
 
         emit MarketCreated(
@@ -348,6 +363,91 @@ contract FhenixMarkets is ReentrancyGuard {
         );
 
         return marketId;
+    }
+
+    // ========================================================================
+    // UNSHIELDING MECHANISM (Required before selling/withdrawing/redeeming)
+    // ========================================================================
+
+    function requestUnshieldShares(bytes32 marketId, uint8 outcome, uint128 amount) external marketExists(marketId) returns (uint256) {
+        require(outcome >= 1 && outcome <= markets[marketId].numOutcomes);
+        require(amount > 0, "Zero amount");
+
+        bytes32 key = _shareKey(marketId, msg.sender, outcome);
+        euint128 encAmount = FHE.asEuint128(uint256(amount));
+        
+        ebool isSufficient = FHE.gte(encShareBalances[key], encAmount);
+        euint128 actualSub = FHE.select(isSufficient, encAmount, FHE.asEuint128(0));
+        encShareBalances[key] = FHE.sub(encShareBalances[key], actualSub);
+        FHE.allowThis(encShareBalances[key]);
+        FHE.allowSender(encShareBalances[key]);
+
+        uint256 reqId = ++nextUnshieldId;
+        unshieldRequests[reqId] = UnshieldRequest({
+            marketId: marketId,
+            user: msg.sender,
+            outcome: outcome,
+            amount: amount,
+            executed: false
+        });
+
+        FHE.allowThis(isSufficient);
+        encUnshieldStatus[reqId] = isSufficient;
+        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(ebool.unwrap(isSufficient)), msg.sender);
+
+        emit UnshieldRequested(reqId, msg.sender, marketId, outcome, amount);
+        return reqId;
+    }
+
+    function requestUnshieldLP(bytes32 marketId, uint128 amount) external marketExists(marketId) returns (uint256) {
+        require(amount > 0, "Zero amount");
+
+        bytes32 key = _lpKey(marketId, msg.sender);
+        euint128 encAmount = FHE.asEuint128(uint256(amount));
+        
+        ebool isSufficient = FHE.gte(encLPBalances[key], encAmount);
+        euint128 actualSub = FHE.select(isSufficient, encAmount, FHE.asEuint128(0));
+        encLPBalances[key] = FHE.sub(encLPBalances[key], actualSub);
+        FHE.allowThis(encLPBalances[key]);
+        FHE.allowSender(encLPBalances[key]);
+
+        uint256 reqId = ++nextUnshieldId;
+        unshieldRequests[reqId] = UnshieldRequest({
+            marketId: marketId,
+            user: msg.sender,
+            outcome: 0,
+            amount: amount,
+            executed: false
+        });
+
+        FHE.allowThis(isSufficient);
+        encUnshieldStatus[reqId] = isSufficient;
+        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(ebool.unwrap(isSufficient)), msg.sender);
+
+        emit UnshieldRequested(reqId, msg.sender, marketId, 0, amount);
+        return reqId;
+    }
+
+    function executeUnshield(uint256 reqId) external {
+        UnshieldRequest storage req = unshieldRequests[reqId];
+        require(req.user != address(0), "Not found");
+        require(!req.executed, "Already executed");
+
+        ebool isSufficient = encUnshieldStatus[reqId];
+        (bool success, bool decrypted) = FHE.getDecryptResultSafe(isSufficient);
+        require(decrypted, "Decryption pending");
+
+        req.executed = true;
+
+        if (success) {
+            if (req.outcome == 0) {
+                publicLPBalances[_lpKey(req.marketId, req.user)] += req.amount;
+            } else {
+                publicShareBalances[_shareKey(req.marketId, req.user, req.outcome)] += req.amount;
+            }
+        }
+
+        emit UnshieldExecuted(reqId, success);
     }
 
     // ========================================================================
@@ -404,7 +504,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
         // ---- FHE: Add shares to encrypted balance (PRIVATE) ----
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheAdd(encShareBalances[key], sharesOut, msg.sender);
+        encShareBalances[key] = _fheAdd(encShareBalances[key], sharesOut);
 
         emit SharesBought(marketId, msg.sender);
     }
@@ -460,10 +560,10 @@ contract FhenixMarkets is ReentrancyGuard {
         bytes32 oKey = _outcomeShareKey(marketId, outcome);
         totalSharesIssued[oKey] -= sharesToSell;
 
-        // ---- FHE: Subtract shares from encrypted balance (PRIVATE) ----
-        // NOTE: FHE.sub on encrypted data — underflow checked by plaintext guards above
+        // ---- Update public unshielded balances ----
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToSell, msg.sender);
+        require(publicShareBalances[key] >= sharesToSell);
+        publicShareBalances[key] -= sharesToSell;
 
         // Transfer ETH to seller
         (bool sent, ) = payable(msg.sender).call{value: netTokens}("");
@@ -517,7 +617,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
         // ---- FHE: Add LP shares to encrypted balance (PRIVATE) ----
         bytes32 key = _lpKey(marketId, msg.sender);
-        encLPBalances[key] = _fheAdd(encLPBalances[key], lpShares, msg.sender);
+        encLPBalances[key] = _fheAdd(encLPBalances[key], lpShares);
 
         emit LiquidityAdded(marketId, msg.sender);
     }
@@ -557,10 +657,10 @@ contract FhenixMarkets is ReentrancyGuard {
         pool.totalLiquidity -= tokensOut;
         marketCredits[marketId] -= tokensOut;
 
-        // ---- FHE: Subtract LP shares (PRIVATE) ----
-        // NOTE: FHE.sub on encrypted data — underflow checked by plaintext guards above
+        // ---- Update public unshielded balances ----
         bytes32 key = _lpKey(marketId, msg.sender);
-        encLPBalances[key] = _fheSub(encLPBalances[key], lpSharesToWithdraw, msg.sender);
+        require(publicLPBalances[key] >= lpSharesToWithdraw);
+        publicLPBalances[key] -= lpSharesToWithdraw;
 
         (bool sent, ) = payable(msg.sender).call{value: tokensOut}("");
         require(sent, "ETH transfer failed");
@@ -681,9 +781,9 @@ contract FhenixMarkets is ReentrancyGuard {
         );
 
         VoteTally storage tally = voteTallies[marketId];
-        require(block.timestamp > tally.votingDeadline, "Voting not closed");
-        require(!tally.finalized, "Already finalized");
-        require(tally.totalVoters >= MIN_VOTERS, "Not enough voters");
+        require(block.timestamp > tally.votingDeadline);
+        require(!tally.finalized);
+        require(tally.totalVoters >= MIN_VOTERS);
 
         // Find outcome with highest bonds
         uint128 maxBonds = tally.outcome1Bonds;
@@ -720,7 +820,7 @@ contract FhenixMarkets is ReentrancyGuard {
         require(market.status == STATUS_PENDING_FINALIZATION, "Not pending");
 
         VoteTally storage tally = voteTallies[marketId];
-        require(block.timestamp > tally.disputeDeadline, "Dispute window open");
+        require(block.timestamp > tally.disputeDeadline);
 
         market.status = MARKET_STATUS_RESOLVED;
 
@@ -741,7 +841,7 @@ contract FhenixMarkets is ReentrancyGuard {
         VoteTally storage tally = voteTallies[marketId];
         require(block.timestamp <= tally.disputeDeadline, "Window closed");
         require(proposedOutcome >= 1 && proposedOutcome <= market.numOutcomes, "Invalid");
-        require(proposedOutcome != tally.winningOutcome, "Same outcome");
+        require(proposedOutcome != tally.winningOutcome);
 
         uint128 requiredBond = tally.totalBonded * DISPUTE_BOND_MULTIPLIER;
         uint128 bondAmount = uint128(msg.value);
@@ -782,7 +882,7 @@ contract FhenixMarkets is ReentrancyGuard {
         uint128 sharesToRedeem
     ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_RESOLVED, "Not resolved");
+        require(market.status == MARKET_STATUS_RESOLVED);
 
         VoteTally storage tally = voteTallies[marketId];
         uint8 winningOutcome = tally.winningOutcome;
@@ -798,16 +898,16 @@ contract FhenixMarkets is ReentrancyGuard {
 
         uint128 payout = (sharesToRedeem * pool.totalLiquidity) / totalWinning;
         require(payout > 0, "Zero payout");
-        require(payout <= marketCredits[marketId], "Insufficient funds");
+        require(payout <= marketCredits[marketId]);
 
         // Update state
         marketCredits[marketId] -= payout;
         totalSharesIssued[oKey] -= sharesToRedeem;
 
-        // ---- FHE: Subtract redeemed shares (PRIVATE) ----
-        // NOTE: FHE.sub on encrypted data — underflow checked by plaintext guards above
+        // ---- Update public unshielded balances ----
         bytes32 key = _shareKey(marketId, msg.sender, winningOutcome);
-        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToRedeem, msg.sender);
+        require(publicShareBalances[key] >= sharesToRedeem);
+        publicShareBalances[key] -= sharesToRedeem;
 
         (bool sent, ) = payable(msg.sender).call{value: payout}("");
         require(sent, "ETH transfer failed");
@@ -842,9 +942,10 @@ contract FhenixMarkets is ReentrancyGuard {
         marketCredits[marketId] -= refundAmount;
         totalSharesIssued[oKey] -= sharesToRefund;
 
-        // ---- FHE: Subtract shares (PRIVATE) ----
+        // ---- Update public unshielded balances ----
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheSub(encShareBalances[key], sharesToRefund, msg.sender);
+        require(publicShareBalances[key] >= sharesToRefund, "Insufficient unshielded shares");
+        publicShareBalances[key] -= sharesToRefund;
 
         (bool sent, ) = payable(msg.sender).call{value: refundAmount}("");
         require(sent, "ETH transfer failed");
@@ -875,8 +976,9 @@ contract FhenixMarkets is ReentrancyGuard {
         pool.totalLiquidity -= refund;
         marketCredits[marketId] -= refund;
 
-        // ---- FHE: Subtract LP shares (PRIVATE) ----
-        encLPBalances[key] = _fheSub(encLPBalances[key], lpSharesToRefund, msg.sender);
+        // ---- Update public unshielded balances ----
+        require(publicLPBalances[key] >= lpSharesToRefund, "Insufficient unshielded LP shares");
+        publicLPBalances[key] -= lpSharesToRefund;
 
         (bool sent, ) = payable(msg.sender).call{value: refund}("");
         require(sent, "ETH transfer failed");

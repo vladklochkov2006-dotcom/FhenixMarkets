@@ -11,9 +11,14 @@ import {
   parseContractError,
   ensureSepoliaNetwork,
   MARKET_STATUS,
+  getPublicLPBalance,
+  requestUnshieldLP,
+  executeUnshield
 } from '@/lib/contracts'
 import { calculateLPSharesOut } from '@/lib/amm'
 import { TransactionLink } from './TransactionLink'
+import { usePrivy } from '@privy-io/react-auth'
+import { useEffect } from 'react'
 
 interface LiquidityPanelProps {
   market: Market
@@ -40,7 +45,10 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
 
   // LP share amount for withdraw (user enters amount in ETH)
   const [lpSharesInput, setLpSharesInput] = useState('')
+  const [isUnshielding, setIsUnshielding] = useState(false)
+  const [publicLPShares, setPublicLPShares] = useState(0n)
 
+  const { user } = usePrivy()
   const tokenSymbol = 'ETH'
 
   // v20: Use total reserves (sum of AMM reserves) for LP calculations
@@ -67,6 +75,13 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
     if (amountWei <= 0n) return 0n
     return calculateLPSharesOut(amountWei, totalLPShares, totalReserves)
   }, [amountWei, totalLPShares, totalReserves])
+
+  useEffect(() => {
+    const addr = user?.wallet?.address
+    if (addr && market.id) {
+      getPublicLPBalance(market.id, addr).then(setPublicLPShares).catch(() => setPublicLPShares(0n))
+    }
+  }, [user?.wallet?.address, market.id])
 
   const handleAddLiquidity = async () => {
     if (!amount || amountWei <= 0n) return
@@ -95,6 +110,15 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
 
     try {
       await ensureSepoliaNetwork()
+
+      if (publicLPShares < lpSharesWei) {
+        setIsUnshielding(true)
+        const needToUnshield = lpSharesWei - publicLPShares
+        const { reqId } = await requestUnshieldLP(market.id, needToUnshield)
+        await executeUnshield(reqId)
+        setIsUnshielding(false)
+      }
+
       const receipt = isCancelled
         ? await contractClaimLPRefund(market.id, lpSharesWei)
         : await contractWithdrawLiquidity(market.id, lpSharesWei)
@@ -102,6 +126,7 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
     } catch (err: unknown) {
       console.error('Failed to withdraw LP:', err)
       setError(parseContractError(err))
+      setIsUnshielding(false)
     } finally {
       setIsSubmitting(false)
     }
@@ -251,26 +276,26 @@ export function LiquidityPanel({ market }: LiquidityPanelProps) {
 
                 <button
                   onClick={handleWithdrawLpResolved}
-                  disabled={!lpSharesInput || parseFloat(lpSharesInput) <= 0 || isSubmitting}
+                  disabled={!lpSharesInput || parseFloat(lpSharesInput) <= 0 || isSubmitting || isUnshielding}
                   className={cn(
                     'w-full flex items-center justify-center gap-2 btn-primary',
                     (!lpSharesInput || parseFloat(lpSharesInput) <= 0) && 'opacity-50 cursor-not-allowed'
                   )}
                 >
-                  {isSubmitting ? (
+                  {isSubmitting || isUnshielding ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Confirm in Wallet...</span>
+                      <span>{isUnshielding ? 'Unshielding LP Shares...' : 'Confirm in Wallet...'}</span>
                     </>
                   ) : (
                     <>
                       <Minus className="w-5 h-5" />
                       <span>
                         {isCancelled
-                          ? 'Claim LP Refund'
+                          ? (publicLPShares < (lpSharesInput ? parseEth(lpSharesInput) : 0n) ? 'Unshield & Claim LP Refund' : 'Claim LP Refund')
                           : winnerClaimWindowActive
                             ? 'Winner Claim Window Active'
-                            : 'Withdraw LP'}
+                            : (publicLPShares < (lpSharesInput ? parseEth(lpSharesInput) : 0n) ? 'Unshield & Withdraw LP' : 'Withdraw LP')}
                       </span>
                     </>
                   )}

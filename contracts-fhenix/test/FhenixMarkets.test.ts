@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { deployMarkets, createTestMarket } from "./helpers";
+import { deployMarkets, createTestMarket, unshieldShares } from "./helpers";
 
 describe("FhenixMarkets", function () {
   // Increase timeout for viaIR compilation
@@ -188,7 +188,8 @@ describe("FhenixMarkets", function () {
       const balBefore = await ethers.provider.getBalance(buyer.address);
 
       // Sell some shares
-      const tx = await markets.sellShares(marketId, 1, 1000, 0);
+      await unshieldShares(markets, marketId, 1, 1000n, buyer);
+      const tx = await markets.connect(buyer).sellShares(marketId, 1, 1000n, 0n);
       const receipt = await tx.wait();
       expect(receipt!.status).to.equal(1);
     });
@@ -197,10 +198,10 @@ describe("FhenixMarkets", function () {
       const markets = await deployMarkets();
       const marketId = await createTestMarket(markets);
 
-      // Try to sell without buying first — encrypted balance is 0
+      // Try to sell without buying first — public balance is 0
       await expect(
         markets.sellShares(marketId, 1, ethers.parseEther("100"), 0)
-      ).to.be.reverted; // FHE.req will fail
+      ).to.be.revertedWith("Insufficient public shares");
     });
   });
 

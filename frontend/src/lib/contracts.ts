@@ -268,6 +268,30 @@ export async function fetchProtocolTreasury(): Promise<bigint> {
 }
 
 // ============================================================================
+// READ FUNCTIONS — Unshielding Balances
+// ============================================================================
+
+export async function getPublicShareBalance(marketId: string, address: string, outcome: number): Promise<bigint> {
+  try {
+    const key = ethers.solidityPackedKeccak256(["bytes32", "address", "uint8"], [marketId, address, outcome])
+    const c = getMarketsRead()
+    return BigInt(await c.publicShareBalances(key))
+  } catch (err) {
+    return 0n
+  }
+}
+
+export async function getPublicLPBalance(marketId: string, address: string): Promise<bigint> {
+  try {
+    const key = ethers.solidityPackedKeccak256(["bytes32", "address"], [marketId, address])
+    const c = getMarketsRead()
+    return BigInt(await c.publicLPBalances(key))
+  } catch (err) {
+    return 0n
+  }
+}
+
+// ============================================================================
 // READ FUNCTIONS — Governance
 // ============================================================================
 
@@ -299,6 +323,62 @@ export async function fetchPanel(marketId: string) {
     devWarn('[contracts] fetchPanel failed:', err)
     return null
   }
+}
+
+// ============================================================================
+// WRITE FUNCTIONS — Unshielding
+// ============================================================================
+
+export async function requestUnshieldShares(
+  marketId: string,
+  outcome: number,
+  amount: bigint,
+): Promise<{ receipt: ethers.TransactionReceipt, reqId: bigint }> {
+  devLog('[contracts] requestUnshieldShares', { marketId, outcome, amount: amount.toString() })
+  const c = await getMarketsWrite()
+  const tx = await c.requestUnshieldShares(marketId, outcome, amount)
+  const receipt = await waitForReceipt(tx)
+
+  let reqId = 0n
+  for (const log of (receipt?.logs || [])) {
+    try {
+      const parsed = c.interface.parseLog(log as unknown as ethers.Log)
+      if (parsed?.name === 'UnshieldRequested') {
+        reqId = BigInt(parsed.args[0])
+      }
+    } catch (e) { }
+  }
+  return { receipt: receipt as ethers.TransactionReceipt, reqId }
+}
+
+export async function requestUnshieldLP(
+  marketId: string,
+  amount: bigint,
+): Promise<{ receipt: ethers.TransactionReceipt, reqId: bigint }> {
+  devLog('[contracts] requestUnshieldLP', { marketId, amount: amount.toString() })
+  const c = await getMarketsWrite()
+  const tx = await c.requestUnshieldLP(marketId, amount)
+  const receipt = await waitForReceipt(tx)
+
+  let reqId = 0n
+  for (const log of (receipt?.logs || [])) {
+    try {
+      const parsed = c.interface.parseLog(log as unknown as ethers.Log)
+      if (parsed?.name === 'UnshieldRequested') {
+        reqId = BigInt(parsed.args[0])
+      }
+    } catch (e) { }
+  }
+  return { receipt: receipt as ethers.TransactionReceipt, reqId }
+}
+
+export async function executeUnshield(
+  reqId: bigint,
+): Promise<ethers.TransactionReceipt> {
+  devLog('[contracts] executeUnshield', { reqId: reqId.toString() })
+  const c = await getMarketsWrite()
+  const tx = await c.executeUnshield(reqId, { gasLimit: 500000 })
+  return await waitForReceipt(tx)
 }
 
 // ============================================================================
