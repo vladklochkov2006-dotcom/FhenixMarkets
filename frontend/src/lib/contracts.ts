@@ -8,6 +8,7 @@
 import { ethers, Contract, JsonRpcProvider, BrowserProvider } from 'ethers'
 import { createCofheClient, createCofheConfig } from '@cofhe/sdk/web'
 import { Encryptable } from '@cofhe/sdk'
+import { chains as cofheChains } from '@cofhe/sdk/chains'
 import { createPublicClient, createWalletClient, custom, http } from 'viem'
 import { sepolia } from 'viem/chains'
 import FhenixMarketsArtifact from './abis/FhenixMarkets.json'
@@ -119,9 +120,9 @@ export async function ensureCofheInitialized(): Promise<any> {
     await ensureSepoliaNetwork()
   }
 
-  // Step 1: Create config
+  // Step 1: Create config using @cofhe/sdk's sepolia chain (with coFheUrl etc.)
   const config = createCofheConfig({
-    supportedChains: [sepolia],
+    supportedChains: [cofheChains.sepolia],
   })
 
   // Step 2: Create client
