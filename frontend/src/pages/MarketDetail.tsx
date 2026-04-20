@@ -28,28 +28,37 @@ import {
 } from 'lucide-react'
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { ethers } from 'ethers'
 import { useWalletStore, useBetsStore, type Market, outcomeToString } from '@/lib/store'
 import { useRealMarketsStore } from '@/lib/market-store'
 import {
   buyShares as contractBuyShares,
   sellShares as contractSellShares,
+  fetchVoteTally,
+  fetchMarketFees,
   parseContractError,
   ensureSepoliaNetwork,
   MARKET_STATUS,
   FHENIX_MARKETS_ADDRESS,
+  type VoteTallyData,
+  type MarketFees,
 } from '@/lib/contracts'
 
-// Compatibility types for resolution/fees/dispute
-type MarketResolutionData = { outcome: number; finalized: boolean; winning_outcome: number; challenge_deadline: bigint } | null
-type MarketFeesData = { creator_fees: bigint; protocol_fees: bigint } | null
-type DisputeDataResult = { disputed: boolean } | null
+// Compatibility types (imported from contracts.ts)
+type MarketResolutionData = VoteTallyData | null
+type MarketFeesData = MarketFees | null
+
+// getCurrentBlockHeight — on Ethereum, use provider to get latest block
+const getCurrentBlockHeight = async (): Promise<bigint> => {
+  try {
+    const provider = new ethers.BrowserProvider((window as any).ethereum)
+    return BigInt(await provider.getBlockNumber())
+  } catch {
+    return BigInt(Math.floor(Date.now() / 1000))
+  }
+}
 
 // Stubs for legacy functions replaced by EVM contracts
-const getCurrentBlockHeight = async (): Promise<bigint> => BigInt(Math.floor(Date.now() / 1000))
-const getMarketResolution = async (_id: string, _pid: string): Promise<MarketResolutionData> => null
-const getMarketFees = async (_id: string, _pid: string): Promise<MarketFeesData> => null
-const getMarketDispute = async (_id: string, _pid: string): Promise<DisputeDataResult> => null
-const getProgramIdForToken = (_t: string) => 'FhenixMarkets'
 import { OddsChart } from '@/components/OddsChart'
 import { CryptoPriceChart } from '@/components/CryptoPriceChart'
 // fetchCreditsRecord dynamically imported where needed for buy_shares_private
@@ -281,7 +290,6 @@ export function MarketDetail() {
   // Additional data fetched on-demand
   const [resolution, setResolution] = useState<MarketResolutionData | null>(null)
   const [fees, setFees] = useState<MarketFeesData | null>(null)
-  const [, setDispute] = useState<DisputeDataResult | null>(null)
 
   // Bet count from Supabase
   const [betCount, setBetCount] = useState(0)
@@ -381,29 +389,28 @@ export function MarketDetail() {
     fetchTimestamp()
   }, [market?.transactionId])
 
-  // Fetch additional data (resolution, fees, dispute) when market loads
-  useEffect(() => {
+  // Fetch additional data (resolution, fees) when market loads
+  const refreshExtras = async () => {
     if (!market?.id) return
-    const fetchExtras = async () => {
-      try {
-        const tokenType = market.tokenType || 'ETH'
-        const pid = getProgramIdForToken(tokenType as 'ETH')
-        const [res, feesData, disputeData] = await Promise.all([
-          getMarketResolution(market.id, pid),
-          getMarketFees(market.id, pid),
-          getMarketDispute(market.id, pid),
-        ])
-        if (res) setResolution(res)
-        if (feesData) setFees(feesData)
-        if (disputeData) setDispute(disputeData)
-      } catch (err) {
-        devWarn('[MarketDetail] Failed to fetch extras:', err)
-      }
+    try {
+      // Refresh markets to get updated status (e.g. ACTIVE → CLOSED)
+      await fetchMarkets()
+
+      const [res, feesData] = await Promise.all([
+        fetchVoteTally(market.id),
+        fetchMarketFees(market.id),
+      ])
+      if (res) setResolution(res)
+      if (feesData) setFees(feesData)
+    } catch (err) {
+      devWarn('[MarketDetail] Failed to refresh extras:', err)
     }
-    fetchExtras()
+  }
+
+  useEffect(() => {
+    refreshExtras()
   }, [market?.id])
 
-  // Live expiry check
   useEffect(() => {
     if (!market || market.status !== 1 || market.timeRemaining === 'Ended') return
 
@@ -756,26 +763,8 @@ export function MarketDetail() {
   // v33: Show liquidity tab for ALL statuses — LP needs to see positions and withdraw
   const showLiquidity = true
 
-  // Re-fetch market + resolution data after a resolution action
-  const refreshExtras = async () => {
-    if (!market?.id) return
-    try {
-      // Refresh markets to get updated status (e.g. ACTIVE → CLOSED)
-      await fetchMarkets()
-      const tt = market.tokenType || 'ETH'
-      const programId = getProgramIdForToken(tt as 'ETH')
-      const [res, feesData, disputeData] = await Promise.all([
-        getMarketResolution(market.id, programId),
-        getMarketFees(market.id, programId),
-        getMarketDispute(market.id, programId),
-      ])
-      if (res) setResolution(res)
-      if (feesData) setFees(feesData)
-      if (disputeData) setDispute(disputeData)
-    } catch (err) {
-      devWarn('[MarketDetail] Failed to refresh extras:', err)
-    }
-  }
+  // Fetch additional data (resolution, fees) when market loads
+
 
   return (
     <div className="min-h-screen bg-surface-950 flex flex-col">
@@ -908,7 +897,7 @@ export function MarketDetail() {
                     onClick={async () => {
                       const url = window.location.href
                       if (navigator.share) {
-                        try { await navigator.share({ title: market.question, url }) } catch {}
+                        try { await navigator.share({ title: market.question, url }) } catch { }
                       } else {
                         await navigator.clipboard.writeText(url)
                         setLinkCopied(true)
@@ -970,36 +959,36 @@ export function MarketDetail() {
                   {/* Price Chart tab */}
                   {contentTab === 'chart' && (
                     <div className="space-y-6">
-                <h2 className="text-lg font-semibold text-white mb-4">Market Sentiment</h2>
+                      <h2 className="text-lg font-semibold text-white mb-4">Market Sentiment</h2>
 
-                {/* Donut chart + pool data visualization */}
-                <ProbabilityDonut
-                  marketId={market.id}
-                  numOutcomes={numOutcomes}
-                  outcomeLabels={outcomeLabels}
-                  prices={prices}
-                  reserves={[market.yesReserve, market.noReserve, market.reserve3, market.reserve4].slice(0, market.numOutcomes)}
-                  totalLiquidity={
-                    (market.status === MARKET_STATUS.RESOLVED || market.status === MARKET_STATUS.CANCELLED)
-                      && market.remainingCredits !== undefined
-                      ? market.remainingCredits
-                      : (market.totalLiquidity ?? 0n)
-                  }
-                  totalVolume={market.totalVolume}
-                  tokenSymbol={market.tokenType || 'ETH'}
-                />
+                      {/* Donut chart + pool data visualization */}
+                      <ProbabilityDonut
+                        marketId={market.id}
+                        numOutcomes={numOutcomes}
+                        outcomeLabels={outcomeLabels}
+                        prices={prices}
+                        reserves={[market.yesReserve, market.noReserve, market.reserve3, market.reserve4].slice(0, market.numOutcomes)}
+                        totalLiquidity={
+                          (market.status === MARKET_STATUS.RESOLVED || market.status === MARKET_STATUS.CANCELLED)
+                            && market.remainingCredits !== undefined
+                            ? market.remainingCredits
+                            : (market.totalLiquidity ?? 0n)
+                        }
+                        totalVolume={market.totalVolume}
+                        tokenSymbol={market.tokenType || 'ETH'}
+                      />
 
-              {/* Pool Breakdown Chart */}
-                <OddsChart
-                  numOutcomes={numOutcomes}
-                  outcomeLabels={outcomeLabels}
-                  reserves={[market.yesReserve, market.noReserve, market.reserve3 || 0n, market.reserve4 || 0n].slice(0, numOutcomes)}
-                  prices={prices}
-                  totalVolume={market.totalVolume}
-                  totalBets={betCount}
-                  tokenSymbol={tokenSymbol}
-                  className="rounded-xl border border-white/[0.04] p-5"
-                />
+                      {/* Pool Breakdown Chart */}
+                      <OddsChart
+                        numOutcomes={numOutcomes}
+                        outcomeLabels={outcomeLabels}
+                        reserves={[market.yesReserve, market.noReserve, market.reserve3 || 0n, market.reserve4 || 0n].slice(0, numOutcomes)}
+                        prices={prices}
+                        totalVolume={market.totalVolume}
+                        totalBets={betCount}
+                        tokenSymbol={tokenSymbol}
+                        className="rounded-xl border border-white/[0.04] p-5"
+                      />
                     </div>
                   )}
 
@@ -1041,9 +1030,8 @@ export function MarketDetail() {
                                   return (
                                     <motion.div key={bet.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
                                       className="flex items-center gap-4 px-4 py-3 rounded-xl bg-white/[0.01] hover:bg-white/[0.02] transition-colors duration-200">
-                                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
-                                        isSell ? 'bg-purple-500/10 text-purple-400' : isYes ? 'bg-yes-400/10 text-yes-400' : 'bg-no-400/10 text-no-400'
-                                      }`}>
+                                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${isSell ? 'bg-purple-500/10 text-purple-400' : isYes ? 'bg-yes-400/10 text-yes-400' : 'bg-no-400/10 text-no-400'
+                                        }`}>
                                         {isSell ? 'S' : isYes ? 'Y' : 'N'}
                                       </div>
                                       <div className="flex-1 min-w-0">
@@ -1245,749 +1233,749 @@ export function MarketDetail() {
             {/* Trading Panel + Market Info (Right Sidebar) */}
             <div className="lg:col-span-1" ref={tradingPanelRef}>
               <div className="sticky top-28 space-y-4">
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-                className="glass-card p-6"
-              >
-                {/* Buy/Sell Tab Toggle */}
-                {!isExpired && canTrade && step === 'select' ? (
-                  <div className="flex gap-2 mb-4">
-                    <button
-                      onClick={() => setTradeMode('buy')}
-                      className={cn(
-                        'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all',
-                        tradeMode === 'buy'
-                          ? 'bg-yes-500/20 text-yes-400 border border-yes-500/30'
-                          : 'bg-white/[0.03] text-surface-400 hover:text-white border border-transparent'
-                      )}
-                    >
-                      <ShoppingCart className="w-4 h-4" />
-                      Buy
-                    </button>
-                    <button
-                      onClick={() => setTradeMode('sell')}
-                      className={cn(
-                        'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all',
-                        tradeMode === 'sell'
-                          ? 'bg-no-500/20 text-no-400 border border-no-500/30'
-                          : 'bg-white/[0.03] text-surface-400 hover:text-white border border-transparent'
-                      )}
-                    >
-                      <TrendingDown className="w-4 h-4" />
-                      Sell
-                    </button>
-                  </div>
-                ) : (
-                  <h2 className="text-lg font-semibold text-white mb-4">
-                    {isExpired ? 'Market Expired' : 'Buy Shares'}
-                  </h2>
-                )}
-
-                {/* Expired State */}
-                {isExpired && step === 'select' && (
-                  <div className="text-center py-8">
-                    <div className="w-16 h-16 rounded-full bg-white/[0.03] flex items-center justify-center mx-auto mb-4">
-                      <Clock className="w-8 h-8 text-surface-500" />
-                    </div>
-                    <h3 className="text-lg font-bold text-white mb-2">Trading Closed</h3>
-                    <p className="text-surface-400 text-sm mb-4">
-                      The trading deadline for this market has passed.
-                    </p>
-                    <button onClick={() => navigate('/dashboard')} className="btn-secondary w-full">
-                      Browse Active Markets
-                    </button>
-                  </div>
-                )}
-
-                {/* Pending State */}
-                {step === 'pending' && (
-                  <div className="text-center py-8">
-                    <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
-                    <h3 className="text-xl font-display font-bold text-white mb-2">Transaction Pending</h3>
-                    <p className="text-surface-400 mb-2">
-                      Your trade of {buyAmount} {tokenSymbol} has been submitted.
-                    </p>
-                    <p className="text-surface-400 text-sm mb-4">
-                      Waiting for on-chain confirmation. This may take 1-3 minutes.
-                    </p>
-                    <button onClick={resetTrade} className="btn-secondary w-full text-sm">
-                      Close & Place Another Trade
-                    </button>
-                  </div>
-                )}
-
-                {/* Success State */}
-                {step === 'success' && (
-                  <div className="text-center py-8">
-                    <div className="w-16 h-16 rounded-full bg-yes-500/10 flex items-center justify-center mx-auto mb-4">
-                      <CheckCircle2 className="w-8 h-8 text-yes-400" />
-                    </div>
-                    <h3 className="text-xl font-display font-bold text-white mb-2">Shares Purchased!</h3>
-                    <p className="text-surface-400 mb-4">
-                      You bought {outcomeLabels[(selectedOutcome ?? 1) - 1]} shares with {buyAmount} {tokenSymbol}.
-                    </p>
-                    {txId && txId.startsWith('0x') ? (
-                      <>
-                        <a
-                          href={`https://sepolia.etherscan.io/tx/${txId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 text-brand-400 hover:text-brand-300 mb-2"
-                        >
-                          <span>View Transaction</span>
-                          <ExternalLink className="w-4 h-4" />
-                        </a>
-                        <p className="text-xs text-surface-500 mb-4">
-                          Transaction may take 30-60 seconds to appear on explorer
-                        </p>
-                      </>
-                    ) : txId ? (
-                      <div className="mb-4">
-                        <p className="text-xs text-surface-500 mb-2">
-                          Transaction is being processed on the blockchain.
-                        </p>
-                      </div>
-                    ) : null}
-                    <button onClick={resetTrade} className="btn-primary w-full">
-                      Buy More Shares
-                    </button>
-                  </div>
-                )}
-
-                {/* Error State */}
-                {step === 'error' && (
-                  <div className="text-center py-8">
-                    <div className="w-16 h-16 rounded-full bg-no-500/10 flex items-center justify-center mx-auto mb-4">
-                      <AlertCircle className="w-8 h-8 text-no-400" />
-                    </div>
-                    <h3 className="text-xl font-display font-bold text-white mb-2">Trade Failed</h3>
-                    <p className="text-surface-400 mb-6 whitespace-pre-line text-left text-sm">{error}</p>
-                    <button onClick={resetTrade} className="btn-primary w-full">
-                      Try Again
-                    </button>
-                  </div>
-                )}
-
-                {/* Processing State */}
-                {step === 'processing' && (
-                  <div className="text-center py-8">
-                    <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
-                    <h3 className="text-xl font-display font-bold text-white mb-2">Processing...</h3>
-                    <p className="text-surface-400">
-                      Please confirm the transaction in your wallet.
-                    </p>
-                  </div>
-                )}
-
-                {/* Trading Form */}
-                {canTrade && step === 'select' && tradeMode === 'buy' && (
-                  <>
-                    {/* Outcome Selection */}
-                    <div className="mb-6">
-                      <label className="text-sm text-surface-400 mb-2 block">Select Outcome</label>
-                      <OutcomeSelector
-                        numOutcomes={numOutcomes}
-                        outcomeLabels={outcomeLabels}
-                        prices={prices}
-                        selectedOutcome={selectedOutcome}
-                        onSelect={setSelectedOutcome}
-                      />
-                    </div>
-
-                    {/* Amount Input */}
-                    {selectedOutcome && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        className="mb-6"
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className="glass-card p-6"
+                >
+                  {/* Buy/Sell Tab Toggle */}
+                  {!isExpired && canTrade && step === 'select' ? (
+                    <div className="flex gap-2 mb-4">
+                      <button
+                        onClick={() => setTradeMode('buy')}
+                        className={cn(
+                          'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all',
+                          tradeMode === 'buy'
+                            ? 'bg-yes-500/20 text-yes-400 border border-yes-500/30'
+                            : 'bg-white/[0.03] text-surface-400 hover:text-white border border-transparent'
+                        )}
                       >
-                        <label className="text-sm text-surface-400 mb-2 block">Amount ({tokenSymbol})</label>
-                        <div className="relative">
-                          <input
-                            type="number"
-                            value={buyAmount}
-                            onChange={(e) => setBuyAmount(e.target.value)}
-                            placeholder="0.00"
-                            className="input-field w-full pr-16 text-lg"
-                            min="0"
-                            step="0.1"
-                          />
-                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-surface-400">
-                            {tokenSymbol}
-                          </span>
-                        </div>
-
-                        {/* Quick Amount Buttons */}
-                        <div className="flex flex-wrap gap-2 mt-3">
-                          {quickAmounts.map(amount => (
-                            <button
-                              key={amount}
-                              onClick={() => setBuyAmount(amount.toString())}
-                              className={cn(
-                                "px-3 py-1.5 rounded-lg text-sm font-medium transition-all active:scale-95",
-                                parseFloat(buyAmount) === amount
-                                  ? "bg-brand-400 text-white"
-                                  : "bg-white/[0.03] text-surface-400 hover:text-white hover:bg-white/[0.06]"
-                              )}
-                            >
-                              {amount}
-                            </button>
-                          ))}
-                        </div>
-
-                        {/* Slippage Tolerance */}
-                        <div className="mt-4">
-                          <Tooltip content="Maximum price change you'll accept between order and execution">
-                            <label className="text-xs text-surface-500 mb-1.5 block cursor-help w-fit">
-                              Slippage Tolerance
-                            </label>
-                          </Tooltip>
-                          <div className="flex gap-2">
-                            {SLIPPAGE_PRESETS.map(s => (
-                              <button
-                                key={s}
-                                onClick={() => setSlippage(s)}
-                                className={cn(
-                                  'px-3 py-1 rounded-lg text-xs font-medium transition-all active:scale-95',
-                                  slippage === s
-                                    ? 'bg-brand-400/[0.12] text-brand-400 border border-brand-400/[0.2]'
-                                    : 'bg-white/[0.03] text-surface-500 hover:text-surface-300'
-                                )}
-                              >
-                                {s}%
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="mt-2 space-y-1">
-                          {wallet.balance.public === 0n && (
-                            <div className="flex items-start gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/20 mb-1">
-                              <AlertCircle className="w-3.5 h-3.5 text-brand-400 flex-shrink-0 mt-0.5" />
-                              <p className="text-xs text-brand-300 leading-relaxed">
-                                You have <strong>0 public ETH</strong>. Trading requires public ETH for gas.
-                              </p>
-                            </div>
-                          )}
-                          <p className="text-xs text-surface-500">
-                            <>Public Balance: {formatCredits(wallet.balance.public)} ETH</>
-                          </p>
-                          <Tooltip content="Gas fee paid to Fhenix network validators for processing your transaction" side="bottom">
-                            <p className="text-xs text-surface-600 cursor-help w-fit">
-                              Transaction fee: 1.5 ETH (from public balance)
-                            </p>
-                          </Tooltip>
-                        </div>
-                      </motion.div>
-                    )}
-
-                    {/* Trade Preview */}
-                    {tradePreview && selectedOutcome && (
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="p-4 rounded-xl bg-white/[0.02] mb-6"
+                        <ShoppingCart className="w-4 h-4" />
+                        Buy
+                      </button>
+                      <button
+                        onClick={() => setTradeMode('sell')}
+                        className={cn(
+                          'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all',
+                          tradeMode === 'sell'
+                            ? 'bg-no-500/20 text-no-400 border border-no-500/30'
+                            : 'bg-white/[0.03] text-surface-400 hover:text-white border border-transparent'
+                        )}
                       >
-                        <div className="flex justify-between mb-2">
-                          <span className="text-surface-400 text-sm">Shares Received</span>
-                          <span className="text-white font-medium text-sm">
-                            {formatCredits(tradePreview.sharesOut)}
-                          </span>
-                        </div>
-                        <div className="flex justify-between mb-2">
-                          <span className="text-surface-400 text-sm">Min Shares (slippage)</span>
-                          <span className="text-surface-300 font-medium text-sm">
-                            {formatCredits(tradePreview.minShares)}
-                          </span>
-                        </div>
-                        <div className="flex justify-between mb-2">
-                          <span className="text-surface-400 text-sm">Price Impact</span>
-                          <span className={cn(
-                            'font-medium text-sm',
-                            Math.abs(tradePreview.priceImpact) > 5 ? 'text-no-400' : 'text-surface-300'
-                          )}>
-                            {tradePreview.priceImpact > 0 ? '+' : ''}{tradePreview.priceImpact.toFixed(2)}%
-                          </span>
-                        </div>
-                        <div className="flex justify-between mb-2">
-                          <span className="text-surface-400 text-sm">Trading Fee (2%)</span>
-                          <span className="text-surface-300 font-medium text-sm">
-                            {formatCredits(tradePreview.fees.totalFees)} {tokenSymbol}
-                          </span>
-                        </div>
-                        <div className="flex justify-between pt-2 border-t border-white/[0.06]">
-                          <span className="text-surface-400 text-sm">Potential Payout (if wins)</span>
-                          <span className="text-yes-400 font-bold text-sm">
-                            {tradePreview.potentialPayout.toFixed(2)} {tokenSymbol}
-                          </span>
-                        </div>
-                        {Math.abs(tradePreview.priceImpact) > 5 && (
-                          <div className="mt-3 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
-                            <p className="text-xs text-no-400">
-                              High price impact! Consider reducing trade size.
-                            </p>
-                          </div>
-                        )}
-                      </motion.div>
-                    )}
+                        <TrendingDown className="w-4 h-4" />
+                        Sell
+                      </button>
+                    </div>
+                  ) : (
+                    <h2 className="text-lg font-semibold text-white mb-4">
+                      {isExpired ? 'Market Expired' : 'Buy Shares'}
+                    </h2>
+                  )}
 
-                    {/* Buy Shares Button */}
-                    <button
-                      onClick={handleBuyShares}
-                      disabled={!selectedOutcome || buyAmountWei <= 0n}
-                      className={cn(
-                        "w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2",
-                        selectedOutcome && buyAmountWei > 0n
-                          ? "bg-brand-400 hover:bg-brand-300 text-white active:scale-[0.98]"
-                          : "bg-white/[0.04] text-surface-500 cursor-not-allowed"
-                      )}
-                    >
-                      <ShoppingCart className="w-5 h-5" />
-                      {selectedOutcome && buyAmountWei > 0n ? (
-                        `Buy ${outcomeLabels[selectedOutcome - 1]} Shares`
-                      ) : (
-                        'Select Outcome & Amount'
-                      )}
-                    </button>
-
-                    {/* Privacy Notice */}
-                    <p className="text-xs text-surface-500 text-center mt-4">
-                      Your trade is encrypted with Fully Homomorphic Encryption.
-                      Only you can see your position.
-                    </p>
-                  </>
-                )}
-
-                {/* Sell Tab Content */}
-                {canTrade && tradeMode === 'sell' && (
-                  <>
-                    {/* Sell: Select state */}
-                    {sellStep === 'select' && (
-                      <div className="space-y-4">
-                        {/* Share Positions from Wallet */}
-                        <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <label className="text-sm text-surface-400">Your Share Positions</label>
-                            {(walletShareRecords.length > 0 || isFetchingRecords) && (
-                              <button
-                                onClick={handleFetchRecords}
-                                disabled={isFetchingRecords}
-                                className="flex items-center gap-1.5 text-xs text-brand-400 hover:text-brand-300 disabled:text-surface-600 transition-colors"
-                              >
-                                {isFetchingRecords ? (
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                ) : (
-                                  <RefreshCw className="w-3 h-3" />
-                                )}
-                                {isFetchingRecords ? 'Loading...' : 'Refresh'}
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Loading state */}
-                          {isFetchingRecords && walletShareRecords.length === 0 && (
-                            <div className="flex items-center justify-center py-6 rounded-xl bg-white/[0.02]">
-                              <Loader2 className="w-5 h-5 text-brand-400 animate-spin mr-2" />
-                              <span className="text-sm text-surface-400">Fetching from wallet...</span>
-                            </div>
-                          )}
-
-                          {/* Records list */}
-                          {walletShareRecords.length > 0 && (
-                            <div className="space-y-2">
-                              {walletShareRecords.map((rec, idx) => {
-                                const isSelected = sellShareRecord === rec.plaintext
-                                const label = outcomeLabels[rec.outcome - 1] || `Outcome ${rec.outcome}`
-                                const colorIdx = Math.min(rec.outcome - 1, 3)
-                                const outcomeColors = [
-                                  'bg-yes-500/10 border-yes-500/30 text-yes-400',
-                                  'bg-no-500/10 border-no-500/30 text-no-400',
-                                  'bg-purple-500/10 border-purple-500/30 text-purple-400',
-                                  'bg-brand-500/10 border-brand-500/30 text-brand-400',
-                                ]
-                                return (
-                                  <button
-                                    key={idx}
-                                    onClick={() => setSellShareRecord(isSelected ? '' : rec.plaintext)}
-                                    className={cn(
-                                      'w-full p-3 rounded-xl border text-left transition-all',
-                                      isSelected
-                                        ? 'bg-brand-500/10 border-brand-500/40 ring-1 ring-brand-400/20'
-                                        : 'bg-white/[0.02] border-white/[0.06] hover:border-surface-600/50'
-                                    )}
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-center gap-2">
-                                        <span className={cn(
-                                          'px-2 py-0.5 text-xs font-medium rounded-full border',
-                                          outcomeColors[colorIdx]
-                                        )}>
-                                          {label}
-                                        </span>
-                                        {isSelected && <Check className="w-3.5 h-3.5 text-brand-400" />}
-                                      </div>
-                                      <span className="text-white font-medium text-sm">
-                                        {formatCredits(rec.quantity)} shares
-                                      </span>
-                                    </div>
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          )}
-
-                          {/* No records found */}
-                          {!isFetchingRecords && walletShareRecords.length === 0 && fetchRecordError && (
-                            <div className="p-4 rounded-xl bg-white/[0.02] text-center">
-                              <Wallet className="w-6 h-6 text-surface-500 mx-auto mb-2" />
-                              <p className="text-xs text-surface-400">{fetchRecordError}</p>
-                            </div>
-                          )}
-
-                          {/* Initial prompt — no fetch attempted yet */}
-                          {!isFetchingRecords && walletShareRecords.length === 0 && !fetchRecordError && (
-                            <button
-                              onClick={handleFetchRecords}
-                              className="w-full py-6 rounded-xl bg-white/[0.02] border border-dashed border-white/[0.06] hover:border-brand-400/[0.2] transition-all text-center group"
-                            >
-                              <Wallet className="w-8 h-8 text-surface-500 group-hover:text-brand-400 mx-auto mb-2 transition-colors" />
-                              <p className="text-sm text-surface-400 group-hover:text-surface-300 transition-colors">
-                                Click to load your share positions
-                              </p>
-                              <p className="text-xs text-surface-600 mt-1">
-                                Fetches OutcomeShare records from your wallet
-                              </p>
-                            </button>
-                          )}
-                        </div>
-
-                        {/* Manual Paste Fallback */}
-                        <div>
-                          <button
-                            onClick={() => setShowPasteInput(!showPasteInput)}
-                            className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-surface-300 transition-colors"
-                          >
-                            <ChevronDown className={cn('w-3 h-3 transition-transform', showPasteInput && 'rotate-180')} />
-                            Enter record manually
-                          </button>
-                          {showPasteInput && (
-                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-2">
-                              <textarea
-                                value={sellShareRecord}
-                                onChange={(e) => setSellShareRecord(e.target.value)}
-                                placeholder={`{\n  owner: 0x...,\n  outcome: 1u8,\n  quantity: 1000000u128,\n  ...\n}`}
-                                className="input-field w-full h-24 text-xs font-mono resize-none"
-                              />
-                            </motion.div>
-                          )}
-                        </div>
-
-                        {/* Record Preview */}
-                        {parsedShareRecord && (
-                          <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="p-3 rounded-xl bg-white/[0.03] space-y-2"
-                          >
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Outcome</span>
-                              <span className="text-white font-medium">
-                                {outcomeLabels[parsedShareRecord.outcome - 1] || `Outcome ${parsedShareRecord.outcome}`}
-                              </span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Your Shares</span>
-                              <span className="text-white font-medium">
-                                {formatCredits(parsedShareRecord.quantity)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Max Withdrawable</span>
-                              <span className="text-surface-300">
-                                {formatCredits(sellMaxTokens)} {tokenSymbol}
-                              </span>
-                            </div>
-                            {parsedShareRecord.marketId && parsedShareRecord.marketId !== market.id && (
-                              <div className="flex items-start gap-2 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
-                                <AlertCircle className="w-3.5 h-3.5 text-no-400 flex-shrink-0 mt-0.5" />
-                                <p className="text-xs text-no-400">This record belongs to a different market!</p>
-                              </div>
-                            )}
-                          </motion.div>
-                        )}
-
-                        {/* Amount to Withdraw */}
-                        {parsedShareRecord && parsedShareRecord.quantity > 0n && (
-                          <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                          >
-                            <label className="text-sm text-surface-400 mb-2 block">
-                              Amount to Withdraw ({tokenSymbol})
-                            </label>
-                            <div className="relative">
-                              <input
-                                type="number"
-                                value={sellTokensDesired}
-                                onChange={(e) => setSellTokensDesired(e.target.value)}
-                                placeholder="0.00"
-                                className="input-field w-full pr-24 text-lg"
-                                min="0"
-                                step="0.1"
-                              />
-                              <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                                <button
-                                  onClick={() => setSellTokensDesired(
-                                    (Number(sellMaxTokens) / 1e18).toString()
-                                  )}
-                                  className="text-xs text-brand-400 hover:text-brand-300"
-                                >
-                                  Max
-                                </button>
-                                <span className="text-surface-400 text-sm">{tokenSymbol}</span>
-                              </div>
-                            </div>
-
-                            {/* Slippage */}
-                            <div className="mt-3">
-                              <label className="text-xs text-surface-500 mb-1.5 block">Slippage Tolerance</label>
-                              <div className="flex gap-2">
-                                {SLIPPAGE_PRESETS.map(s => (
-                                  <button
-                                    key={s}
-                                    onClick={() => setSellSlippage(s)}
-                                    className={cn(
-                                      'px-3 py-1 rounded-lg text-xs font-medium transition-all',
-                                      sellSlippage === s
-                                        ? 'bg-brand-400/[0.12] text-brand-400 border border-brand-400/[0.2]'
-                                        : 'bg-white/[0.03] text-surface-500 hover:text-surface-300'
-                                    )}
-                                  >
-                                    {s}%
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </motion.div>
-                        )}
-
-                        {/* Sell Preview */}
-                        {sellPreview && (
-                          <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="p-4 rounded-xl bg-white/[0.02] space-y-2"
-                          >
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Shares Used</span>
-                              <span className="text-white font-medium">
-                                {formatCredits(sellPreview.sharesNeeded)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Max Shares (slippage)</span>
-                              <span className="text-surface-300">
-                                {formatCredits(sellPreview.maxSharesUsed)}
-                              </span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Trading Fee (2%)</span>
-                              <span className="text-surface-300">
-                                {formatCredits(sellPreview.fees.totalFees)} {tokenSymbol}
-                              </span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-surface-400">Price Impact</span>
-                              <span className={cn(
-                                'font-medium',
-                                Math.abs(sellPreview.priceImpact) > 5 ? 'text-no-400' : 'text-surface-300'
-                              )}>
-                                {sellPreview.priceImpact.toFixed(2)}%
-                              </span>
-                            </div>
-                            <div className="flex justify-between pt-2 border-t border-white/[0.06]">
-                              <span className="text-surface-400 text-sm">You Receive</span>
-                              <span className="text-yes-400 font-bold">
-                                {formatCredits(sellPreview.netTokens)} {tokenSymbol}
-                              </span>
-                            </div>
-                            {sellPreview.exceedsBalance && (
-                              <div className="mt-2 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
-                                <p className="text-xs text-no-400">
-                                  Insufficient shares. Try a smaller amount.
-                                </p>
-                              </div>
-                            )}
-                            {Math.abs(sellPreview.priceImpact) > 5 && !sellPreview.exceedsBalance && (
-                              <div className="mt-2 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
-                                <p className="text-xs text-no-400">
-                                  High price impact! Consider reducing amount.
-                                </p>
-                              </div>
-                            )}
-                          </motion.div>
-                        )}
-
-                        {/* Sell Button */}
-                        <button
-                          onClick={handleSellShares}
-                          disabled={!parsedShareRecord || sellTokensWei <= 0n || sellPreview?.exceedsBalance}
-                          className={cn(
-                            "w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2",
-                            parsedShareRecord && sellTokensWei > 0n && !sellPreview?.exceedsBalance
-                              ? "bg-no-500 hover:bg-no-400 text-white"
-                              : "bg-white/[0.04] text-surface-500 cursor-not-allowed"
-                          )}
-                        >
-                          <TrendingDown className="w-5 h-5" />
-                          {parsedShareRecord && sellTokensWei > 0n
-                            ? `Sell for ${sellTokensDesired} ${tokenSymbol}`
-                            : 'Select Position & Enter Amount'}
-                        </button>
-
-                        <p className="text-xs text-surface-500 text-center">
-                          Shares are burned and tokens transferred to your public balance.
-                        </p>
+                  {/* Expired State */}
+                  {isExpired && step === 'select' && (
+                    <div className="text-center py-8">
+                      <div className="w-16 h-16 rounded-full bg-white/[0.03] flex items-center justify-center mx-auto mb-4">
+                        <Clock className="w-8 h-8 text-surface-500" />
                       </div>
-                    )}
+                      <h3 className="text-lg font-bold text-white mb-2">Trading Closed</h3>
+                      <p className="text-surface-400 text-sm mb-4">
+                        The trading deadline for this market has passed.
+                      </p>
+                      <button onClick={() => navigate('/dashboard')} className="btn-secondary w-full">
+                        Browse Active Markets
+                      </button>
+                    </div>
+                  )}
 
-                    {/* Sell: Processing */}
-                    {sellStep === 'processing' && (
-                      <div className="text-center py-8">
-                        <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
-                        <h3 className="text-xl font-display font-bold text-white mb-2">Processing...</h3>
-                        <p className="text-surface-400">Please confirm the transaction in your wallet.</p>
+                  {/* Pending State */}
+                  {step === 'pending' && (
+                    <div className="text-center py-8">
+                      <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
+                      <h3 className="text-xl font-display font-bold text-white mb-2">Transaction Pending</h3>
+                      <p className="text-surface-400 mb-2">
+                        Your trade of {buyAmount} {tokenSymbol} has been submitted.
+                      </p>
+                      <p className="text-surface-400 text-sm mb-4">
+                        Waiting for on-chain confirmation. This may take 1-3 minutes.
+                      </p>
+                      <button onClick={resetTrade} className="btn-secondary w-full text-sm">
+                        Close & Place Another Trade
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Success State */}
+                  {step === 'success' && (
+                    <div className="text-center py-8">
+                      <div className="w-16 h-16 rounded-full bg-yes-500/10 flex items-center justify-center mx-auto mb-4">
+                        <CheckCircle2 className="w-8 h-8 text-yes-400" />
                       </div>
-                    )}
-
-                    {/* Sell: Pending */}
-                    {sellStep === 'pending' && (
-                      <div className="text-center py-8">
-                        <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
-                        <h3 className="text-xl font-display font-bold text-white mb-2">Transaction Pending</h3>
-                        <p className="text-surface-400 mb-4">
-                          Waiting for on-chain confirmation. This may take 1-3 minutes.
-                        </p>
-                        <button onClick={resetSell} className="btn-secondary w-full text-sm">
-                          Close
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Sell: Success */}
-                    {sellStep === 'success' && (
-                      <div className="text-center py-8">
-                        <div className="w-16 h-16 rounded-full bg-yes-500/10 flex items-center justify-center mx-auto mb-4">
-                          <CheckCircle2 className="w-8 h-8 text-yes-400" />
-                        </div>
-                        <h3 className="text-xl font-display font-bold text-white mb-2">Shares Sold!</h3>
-                        <p className="text-surface-400 mb-4">
-                          You withdrew {sellTokensDesired} {tokenSymbol} from the pool.
-                        </p>
-                        {sellTxId && sellTxId.startsWith('0x') && (
+                      <h3 className="text-xl font-display font-bold text-white mb-2">Shares Purchased!</h3>
+                      <p className="text-surface-400 mb-4">
+                        You bought {outcomeLabels[(selectedOutcome ?? 1) - 1]} shares with {buyAmount} {tokenSymbol}.
+                      </p>
+                      {txId && txId.startsWith('0x') ? (
+                        <>
                           <a
-                            href={`https://sepolia.etherscan.io/tx/${sellTxId}`}
+                            href={`https://sepolia.etherscan.io/tx/${txId}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 text-brand-400 hover:text-brand-300 mb-4"
+                            className="inline-flex items-center gap-2 text-brand-400 hover:text-brand-300 mb-2"
                           >
                             <span>View Transaction</span>
                             <ExternalLink className="w-4 h-4" />
                           </a>
-                        )}
-                        <button onClick={resetSell} className="btn-primary w-full">
-                          Done
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Sell: Error */}
-                    {sellStep === 'error' && (
-                      <div className="text-center py-8">
-                        <div className="w-16 h-16 rounded-full bg-no-500/10 flex items-center justify-center mx-auto mb-4">
-                          <AlertCircle className="w-8 h-8 text-no-400" />
+                          <p className="text-xs text-surface-500 mb-4">
+                            Transaction may take 30-60 seconds to appear on explorer
+                          </p>
+                        </>
+                      ) : txId ? (
+                        <div className="mb-4">
+                          <p className="text-xs text-surface-500 mb-2">
+                            Transaction is being processed on the blockchain.
+                          </p>
                         </div>
-                        <h3 className="text-xl font-display font-bold text-white mb-2">Sell Failed</h3>
-                        <p className="text-surface-400 mb-6 whitespace-pre-line text-left text-sm">{sellError}</p>
-                        <button onClick={resetSell} className="btn-primary w-full">
-                          Try Again
-                        </button>
+                      ) : null}
+                      <button onClick={resetTrade} className="btn-primary w-full">
+                        Buy More Shares
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Error State */}
+                  {step === 'error' && (
+                    <div className="text-center py-8">
+                      <div className="w-16 h-16 rounded-full bg-no-500/10 flex items-center justify-center mx-auto mb-4">
+                        <AlertCircle className="w-8 h-8 text-no-400" />
                       </div>
-                    )}
-                  </>
-                )}
-              </motion.div>
+                      <h3 className="text-xl font-display font-bold text-white mb-2">Trade Failed</h3>
+                      <p className="text-surface-400 mb-6 whitespace-pre-line text-left text-sm">{error}</p>
+                      <button onClick={resetTrade} className="btn-primary w-full">
+                        Try Again
+                      </button>
+                    </div>
+                  )}
 
-              {/* Market Information — below trading panel */}
-              <div className="glass-card p-5">
-                <h4 className="text-xs font-heading font-semibold text-surface-400 uppercase tracking-wider mb-4">Market Info</h4>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Market ID</span>
-                    <CopyableText text={market.id} displayText={`${market.id.slice(0, 8)}...${market.id.slice(-6)}`} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Created</span>
-                    <span className="text-xs font-medium text-white tabular-nums">
-                      {createdTimestamp || (market.transactionId?.startsWith('0x') ? 'Fetching...' : 'On-chain')}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Deadline</span>
-                    <span className="text-xs font-medium text-white tabular-nums">
-                      {market.deadlineTimestamp
-                        ? new Date(market.deadlineTimestamp).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                        : `Block ${market.deadline.toString()}`}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Token</span>
-                    <span className="text-xs font-medium text-white">{tokenSymbol}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Creator</span>
-                    {isValidAddress(market.creator) ? (
-                      <a href={`https://etherscan.io/address/${market.creator}`} target="_blank" rel="noopener noreferrer"
+                  {/* Processing State */}
+                  {step === 'processing' && (
+                    <div className="text-center py-8">
+                      <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
+                      <h3 className="text-xl font-display font-bold text-white mb-2">Processing...</h3>
+                      <p className="text-surface-400">
+                        Please confirm the transaction in your wallet.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Trading Form */}
+                  {canTrade && step === 'select' && tradeMode === 'buy' && (
+                    <>
+                      {/* Outcome Selection */}
+                      <div className="mb-6">
+                        <label className="text-sm text-surface-400 mb-2 block">Select Outcome</label>
+                        <OutcomeSelector
+                          numOutcomes={numOutcomes}
+                          outcomeLabels={outcomeLabels}
+                          prices={prices}
+                          selectedOutcome={selectedOutcome}
+                          onSelect={setSelectedOutcome}
+                        />
+                      </div>
+
+                      {/* Amount Input */}
+                      {selectedOutcome && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          className="mb-6"
+                        >
+                          <label className="text-sm text-surface-400 mb-2 block">Amount ({tokenSymbol})</label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              value={buyAmount}
+                              onChange={(e) => setBuyAmount(e.target.value)}
+                              placeholder="0.00"
+                              className="input-field w-full pr-16 text-lg"
+                              min="0"
+                              step="0.1"
+                            />
+                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-surface-400">
+                              {tokenSymbol}
+                            </span>
+                          </div>
+
+                          {/* Quick Amount Buttons */}
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            {quickAmounts.map(amount => (
+                              <button
+                                key={amount}
+                                onClick={() => setBuyAmount(amount.toString())}
+                                className={cn(
+                                  "px-3 py-1.5 rounded-lg text-sm font-medium transition-all active:scale-95",
+                                  parseFloat(buyAmount) === amount
+                                    ? "bg-brand-400 text-white"
+                                    : "bg-white/[0.03] text-surface-400 hover:text-white hover:bg-white/[0.06]"
+                                )}
+                              >
+                                {amount}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Slippage Tolerance */}
+                          <div className="mt-4">
+                            <Tooltip content="Maximum price change you'll accept between order and execution">
+                              <label className="text-xs text-surface-500 mb-1.5 block cursor-help w-fit">
+                                Slippage Tolerance
+                              </label>
+                            </Tooltip>
+                            <div className="flex gap-2">
+                              {SLIPPAGE_PRESETS.map(s => (
+                                <button
+                                  key={s}
+                                  onClick={() => setSlippage(s)}
+                                  className={cn(
+                                    'px-3 py-1 rounded-lg text-xs font-medium transition-all active:scale-95',
+                                    slippage === s
+                                      ? 'bg-brand-400/[0.12] text-brand-400 border border-brand-400/[0.2]'
+                                      : 'bg-white/[0.03] text-surface-500 hover:text-surface-300'
+                                  )}
+                                >
+                                  {s}%
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="mt-2 space-y-1">
+                            {wallet.balance.public === 0n && (
+                              <div className="flex items-start gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/20 mb-1">
+                                <AlertCircle className="w-3.5 h-3.5 text-brand-400 flex-shrink-0 mt-0.5" />
+                                <p className="text-xs text-brand-300 leading-relaxed">
+                                  You have <strong>0 public ETH</strong>. Trading requires public ETH for gas.
+                                </p>
+                              </div>
+                            )}
+                            <p className="text-xs text-surface-500">
+                              <>Public Balance: {formatCredits(wallet.balance.public)} ETH</>
+                            </p>
+                            <Tooltip content="Gas fee paid to Fhenix network validators for processing your transaction" side="bottom">
+                              <p className="text-xs text-surface-600 cursor-help w-fit">
+                                Transaction fee: 1.5 ETH (from public balance)
+                              </p>
+                            </Tooltip>
+                          </div>
+                        </motion.div>
+                      )}
+
+                      {/* Trade Preview */}
+                      {tradePreview && selectedOutcome && (
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="p-4 rounded-xl bg-white/[0.02] mb-6"
+                        >
+                          <div className="flex justify-between mb-2">
+                            <span className="text-surface-400 text-sm">Shares Received</span>
+                            <span className="text-white font-medium text-sm">
+                              {formatCredits(tradePreview.sharesOut)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between mb-2">
+                            <span className="text-surface-400 text-sm">Min Shares (slippage)</span>
+                            <span className="text-surface-300 font-medium text-sm">
+                              {formatCredits(tradePreview.minShares)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between mb-2">
+                            <span className="text-surface-400 text-sm">Price Impact</span>
+                            <span className={cn(
+                              'font-medium text-sm',
+                              Math.abs(tradePreview.priceImpact) > 5 ? 'text-no-400' : 'text-surface-300'
+                            )}>
+                              {tradePreview.priceImpact > 0 ? '+' : ''}{tradePreview.priceImpact.toFixed(2)}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between mb-2">
+                            <span className="text-surface-400 text-sm">Trading Fee (2%)</span>
+                            <span className="text-surface-300 font-medium text-sm">
+                              {formatCredits(tradePreview.fees.totalFees)} {tokenSymbol}
+                            </span>
+                          </div>
+                          <div className="flex justify-between pt-2 border-t border-white/[0.06]">
+                            <span className="text-surface-400 text-sm">Potential Payout (if wins)</span>
+                            <span className="text-yes-400 font-bold text-sm">
+                              {tradePreview.potentialPayout.toFixed(2)} {tokenSymbol}
+                            </span>
+                          </div>
+                          {Math.abs(tradePreview.priceImpact) > 5 && (
+                            <div className="mt-3 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
+                              <p className="text-xs text-no-400">
+                                High price impact! Consider reducing trade size.
+                              </p>
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+
+                      {/* Buy Shares Button */}
+                      <button
+                        onClick={handleBuyShares}
+                        disabled={!selectedOutcome || buyAmountWei <= 0n}
+                        className={cn(
+                          "w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2",
+                          selectedOutcome && buyAmountWei > 0n
+                            ? "bg-brand-400 hover:bg-brand-300 text-white active:scale-[0.98]"
+                            : "bg-white/[0.04] text-surface-500 cursor-not-allowed"
+                        )}
+                      >
+                        <ShoppingCart className="w-5 h-5" />
+                        {selectedOutcome && buyAmountWei > 0n ? (
+                          `Buy ${outcomeLabels[selectedOutcome - 1]} Shares`
+                        ) : (
+                          'Select Outcome & Amount'
+                        )}
+                      </button>
+
+                      {/* Privacy Notice */}
+                      <p className="text-xs text-surface-500 text-center mt-4">
+                        Your trade is encrypted with Fully Homomorphic Encryption.
+                        Only you can see your position.
+                      </p>
+                    </>
+                  )}
+
+                  {/* Sell Tab Content */}
+                  {canTrade && tradeMode === 'sell' && (
+                    <>
+                      {/* Sell: Select state */}
+                      {sellStep === 'select' && (
+                        <div className="space-y-4">
+                          {/* Share Positions from Wallet */}
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <label className="text-sm text-surface-400">Your Share Positions</label>
+                              {(walletShareRecords.length > 0 || isFetchingRecords) && (
+                                <button
+                                  onClick={handleFetchRecords}
+                                  disabled={isFetchingRecords}
+                                  className="flex items-center gap-1.5 text-xs text-brand-400 hover:text-brand-300 disabled:text-surface-600 transition-colors"
+                                >
+                                  {isFetchingRecords ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="w-3 h-3" />
+                                  )}
+                                  {isFetchingRecords ? 'Loading...' : 'Refresh'}
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Loading state */}
+                            {isFetchingRecords && walletShareRecords.length === 0 && (
+                              <div className="flex items-center justify-center py-6 rounded-xl bg-white/[0.02]">
+                                <Loader2 className="w-5 h-5 text-brand-400 animate-spin mr-2" />
+                                <span className="text-sm text-surface-400">Fetching from wallet...</span>
+                              </div>
+                            )}
+
+                            {/* Records list */}
+                            {walletShareRecords.length > 0 && (
+                              <div className="space-y-2">
+                                {walletShareRecords.map((rec, idx) => {
+                                  const isSelected = sellShareRecord === rec.plaintext
+                                  const label = outcomeLabels[rec.outcome - 1] || `Outcome ${rec.outcome}`
+                                  const colorIdx = Math.min(rec.outcome - 1, 3)
+                                  const outcomeColors = [
+                                    'bg-yes-500/10 border-yes-500/30 text-yes-400',
+                                    'bg-no-500/10 border-no-500/30 text-no-400',
+                                    'bg-purple-500/10 border-purple-500/30 text-purple-400',
+                                    'bg-brand-500/10 border-brand-500/30 text-brand-400',
+                                  ]
+                                  return (
+                                    <button
+                                      key={idx}
+                                      onClick={() => setSellShareRecord(isSelected ? '' : rec.plaintext)}
+                                      className={cn(
+                                        'w-full p-3 rounded-xl border text-left transition-all',
+                                        isSelected
+                                          ? 'bg-brand-500/10 border-brand-500/40 ring-1 ring-brand-400/20'
+                                          : 'bg-white/[0.02] border-white/[0.06] hover:border-surface-600/50'
+                                      )}
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                          <span className={cn(
+                                            'px-2 py-0.5 text-xs font-medium rounded-full border',
+                                            outcomeColors[colorIdx]
+                                          )}>
+                                            {label}
+                                          </span>
+                                          {isSelected && <Check className="w-3.5 h-3.5 text-brand-400" />}
+                                        </div>
+                                        <span className="text-white font-medium text-sm">
+                                          {formatCredits(rec.quantity)} shares
+                                        </span>
+                                      </div>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+
+                            {/* No records found */}
+                            {!isFetchingRecords && walletShareRecords.length === 0 && fetchRecordError && (
+                              <div className="p-4 rounded-xl bg-white/[0.02] text-center">
+                                <Wallet className="w-6 h-6 text-surface-500 mx-auto mb-2" />
+                                <p className="text-xs text-surface-400">{fetchRecordError}</p>
+                              </div>
+                            )}
+
+                            {/* Initial prompt — no fetch attempted yet */}
+                            {!isFetchingRecords && walletShareRecords.length === 0 && !fetchRecordError && (
+                              <button
+                                onClick={handleFetchRecords}
+                                className="w-full py-6 rounded-xl bg-white/[0.02] border border-dashed border-white/[0.06] hover:border-brand-400/[0.2] transition-all text-center group"
+                              >
+                                <Wallet className="w-8 h-8 text-surface-500 group-hover:text-brand-400 mx-auto mb-2 transition-colors" />
+                                <p className="text-sm text-surface-400 group-hover:text-surface-300 transition-colors">
+                                  Click to load your share positions
+                                </p>
+                                <p className="text-xs text-surface-600 mt-1">
+                                  Fetches OutcomeShare records from your wallet
+                                </p>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Manual Paste Fallback */}
+                          <div>
+                            <button
+                              onClick={() => setShowPasteInput(!showPasteInput)}
+                              className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-surface-300 transition-colors"
+                            >
+                              <ChevronDown className={cn('w-3 h-3 transition-transform', showPasteInput && 'rotate-180')} />
+                              Enter record manually
+                            </button>
+                            {showPasteInput && (
+                              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mt-2">
+                                <textarea
+                                  value={sellShareRecord}
+                                  onChange={(e) => setSellShareRecord(e.target.value)}
+                                  placeholder={`{\n  owner: 0x...,\n  outcome: 1u8,\n  quantity: 1000000u128,\n  ...\n}`}
+                                  className="input-field w-full h-24 text-xs font-mono resize-none"
+                                />
+                              </motion.div>
+                            )}
+                          </div>
+
+                          {/* Record Preview */}
+                          {parsedShareRecord && (
+                            <motion.div
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className="p-3 rounded-xl bg-white/[0.03] space-y-2"
+                            >
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Outcome</span>
+                                <span className="text-white font-medium">
+                                  {outcomeLabels[parsedShareRecord.outcome - 1] || `Outcome ${parsedShareRecord.outcome}`}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Your Shares</span>
+                                <span className="text-white font-medium">
+                                  {formatCredits(parsedShareRecord.quantity)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Max Withdrawable</span>
+                                <span className="text-surface-300">
+                                  {formatCredits(sellMaxTokens)} {tokenSymbol}
+                                </span>
+                              </div>
+                              {parsedShareRecord.marketId && parsedShareRecord.marketId !== market.id && (
+                                <div className="flex items-start gap-2 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
+                                  <AlertCircle className="w-3.5 h-3.5 text-no-400 flex-shrink-0 mt-0.5" />
+                                  <p className="text-xs text-no-400">This record belongs to a different market!</p>
+                                </div>
+                              )}
+                            </motion.div>
+                          )}
+
+                          {/* Amount to Withdraw */}
+                          {parsedShareRecord && parsedShareRecord.quantity > 0n && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                            >
+                              <label className="text-sm text-surface-400 mb-2 block">
+                                Amount to Withdraw ({tokenSymbol})
+                              </label>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={sellTokensDesired}
+                                  onChange={(e) => setSellTokensDesired(e.target.value)}
+                                  placeholder="0.00"
+                                  className="input-field w-full pr-24 text-lg"
+                                  min="0"
+                                  step="0.1"
+                                />
+                                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                                  <button
+                                    onClick={() => setSellTokensDesired(
+                                      (Number(sellMaxTokens) / 1e18).toString()
+                                    )}
+                                    className="text-xs text-brand-400 hover:text-brand-300"
+                                  >
+                                    Max
+                                  </button>
+                                  <span className="text-surface-400 text-sm">{tokenSymbol}</span>
+                                </div>
+                              </div>
+
+                              {/* Slippage */}
+                              <div className="mt-3">
+                                <label className="text-xs text-surface-500 mb-1.5 block">Slippage Tolerance</label>
+                                <div className="flex gap-2">
+                                  {SLIPPAGE_PRESETS.map(s => (
+                                    <button
+                                      key={s}
+                                      onClick={() => setSellSlippage(s)}
+                                      className={cn(
+                                        'px-3 py-1 rounded-lg text-xs font-medium transition-all',
+                                        sellSlippage === s
+                                          ? 'bg-brand-400/[0.12] text-brand-400 border border-brand-400/[0.2]'
+                                          : 'bg-white/[0.03] text-surface-500 hover:text-surface-300'
+                                      )}
+                                    >
+                                      {s}%
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+
+                          {/* Sell Preview */}
+                          {sellPreview && (
+                            <motion.div
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className="p-4 rounded-xl bg-white/[0.02] space-y-2"
+                            >
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Shares Used</span>
+                                <span className="text-white font-medium">
+                                  {formatCredits(sellPreview.sharesNeeded)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Max Shares (slippage)</span>
+                                <span className="text-surface-300">
+                                  {formatCredits(sellPreview.maxSharesUsed)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Trading Fee (2%)</span>
+                                <span className="text-surface-300">
+                                  {formatCredits(sellPreview.fees.totalFees)} {tokenSymbol}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-surface-400">Price Impact</span>
+                                <span className={cn(
+                                  'font-medium',
+                                  Math.abs(sellPreview.priceImpact) > 5 ? 'text-no-400' : 'text-surface-300'
+                                )}>
+                                  {sellPreview.priceImpact.toFixed(2)}%
+                                </span>
+                              </div>
+                              <div className="flex justify-between pt-2 border-t border-white/[0.06]">
+                                <span className="text-surface-400 text-sm">You Receive</span>
+                                <span className="text-yes-400 font-bold">
+                                  {formatCredits(sellPreview.netTokens)} {tokenSymbol}
+                                </span>
+                              </div>
+                              {sellPreview.exceedsBalance && (
+                                <div className="mt-2 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
+                                  <p className="text-xs text-no-400">
+                                    Insufficient shares. Try a smaller amount.
+                                  </p>
+                                </div>
+                              )}
+                              {Math.abs(sellPreview.priceImpact) > 5 && !sellPreview.exceedsBalance && (
+                                <div className="mt-2 p-2 rounded-lg bg-no-500/10 border border-no-500/20">
+                                  <p className="text-xs text-no-400">
+                                    High price impact! Consider reducing amount.
+                                  </p>
+                                </div>
+                              )}
+                            </motion.div>
+                          )}
+
+                          {/* Sell Button */}
+                          <button
+                            onClick={handleSellShares}
+                            disabled={!parsedShareRecord || sellTokensWei <= 0n || sellPreview?.exceedsBalance}
+                            className={cn(
+                              "w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2",
+                              parsedShareRecord && sellTokensWei > 0n && !sellPreview?.exceedsBalance
+                                ? "bg-no-500 hover:bg-no-400 text-white"
+                                : "bg-white/[0.04] text-surface-500 cursor-not-allowed"
+                            )}
+                          >
+                            <TrendingDown className="w-5 h-5" />
+                            {parsedShareRecord && sellTokensWei > 0n
+                              ? `Sell for ${sellTokensDesired} ${tokenSymbol}`
+                              : 'Select Position & Enter Amount'}
+                          </button>
+
+                          <p className="text-xs text-surface-500 text-center">
+                            Shares are burned and tokens transferred to your public balance.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Sell: Processing */}
+                      {sellStep === 'processing' && (
+                        <div className="text-center py-8">
+                          <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
+                          <h3 className="text-xl font-display font-bold text-white mb-2">Processing...</h3>
+                          <p className="text-surface-400">Please confirm the transaction in your wallet.</p>
+                        </div>
+                      )}
+
+                      {/* Sell: Pending */}
+                      {sellStep === 'pending' && (
+                        <div className="text-center py-8">
+                          <Loader2 className="w-12 h-12 text-brand-400 animate-spin mx-auto mb-4" />
+                          <h3 className="text-xl font-display font-bold text-white mb-2">Transaction Pending</h3>
+                          <p className="text-surface-400 mb-4">
+                            Waiting for on-chain confirmation. This may take 1-3 minutes.
+                          </p>
+                          <button onClick={resetSell} className="btn-secondary w-full text-sm">
+                            Close
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Sell: Success */}
+                      {sellStep === 'success' && (
+                        <div className="text-center py-8">
+                          <div className="w-16 h-16 rounded-full bg-yes-500/10 flex items-center justify-center mx-auto mb-4">
+                            <CheckCircle2 className="w-8 h-8 text-yes-400" />
+                          </div>
+                          <h3 className="text-xl font-display font-bold text-white mb-2">Shares Sold!</h3>
+                          <p className="text-surface-400 mb-4">
+                            You withdrew {sellTokensDesired} {tokenSymbol} from the pool.
+                          </p>
+                          {sellTxId && sellTxId.startsWith('0x') && (
+                            <a
+                              href={`https://sepolia.etherscan.io/tx/${sellTxId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-2 text-brand-400 hover:text-brand-300 mb-4"
+                            >
+                              <span>View Transaction</span>
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
+                          )}
+                          <button onClick={resetSell} className="btn-primary w-full">
+                            Done
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Sell: Error */}
+                      {sellStep === 'error' && (
+                        <div className="text-center py-8">
+                          <div className="w-16 h-16 rounded-full bg-no-500/10 flex items-center justify-center mx-auto mb-4">
+                            <AlertCircle className="w-8 h-8 text-no-400" />
+                          </div>
+                          <h3 className="text-xl font-display font-bold text-white mb-2">Sell Failed</h3>
+                          <p className="text-surface-400 mb-6 whitespace-pre-line text-left text-sm">{sellError}</p>
+                          <button onClick={resetSell} className="btn-primary w-full">
+                            Try Again
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </motion.div>
+
+                {/* Market Information — below trading panel */}
+                <div className="glass-card p-5">
+                  <h4 className="text-xs font-heading font-semibold text-surface-400 uppercase tracking-wider mb-4">Market Info</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Market ID</span>
+                      <CopyableText text={market.id} displayText={`${market.id.slice(0, 8)}...${market.id.slice(-6)}`} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Created</span>
+                      <span className="text-xs font-medium text-white tabular-nums">
+                        {createdTimestamp || (market.transactionId?.startsWith('0x') ? 'Fetching...' : 'On-chain')}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Deadline</span>
+                      <span className="text-xs font-medium text-white tabular-nums">
+                        {market.deadlineTimestamp
+                          ? new Date(market.deadlineTimestamp).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                          : `Block ${market.deadline.toString()}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Token</span>
+                      <span className="text-xs font-medium text-white">{tokenSymbol}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Creator</span>
+                      {isValidAddress(market.creator) ? (
+                        <a href={`https://etherscan.io/address/${market.creator}`} target="_blank" rel="noopener noreferrer"
+                          className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
+                          {market.creator?.slice(0, 8)}...{market.creator?.slice(-4)} <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ) : (
+                        <span className="text-xs text-surface-400">{market.creator?.slice(0, 8)}...{market.creator?.slice(-4)}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Oracle</span>
+                      <span className="text-xs text-white truncate max-w-[140px]">{market.resolutionSource || 'On-chain'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Fees</span>
+                      <span className="text-xs text-white">2%</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500">Contract</span>
+                      <a href={`https://sepolia.etherscan.io/address/${FHENIX_MARKETS_ADDRESS}`} target="_blank" rel="noopener noreferrer"
                         className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
-                        {market.creator?.slice(0, 8)}...{market.creator?.slice(-4)} <ExternalLink className="w-3 h-3" />
+                        {FHENIX_MARKETS_ADDRESS.slice(0, 12)}... <ExternalLink className="w-3 h-3" />
                       </a>
-                    ) : (
-                      <span className="text-xs text-surface-400">{market.creator?.slice(0, 8)}...{market.creator?.slice(-4)}</span>
-                    )}
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Oracle</span>
-                    <span className="text-xs text-white truncate max-w-[140px]">{market.resolutionSource || 'On-chain'}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Fees</span>
-                    <span className="text-xs text-white">2%</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-surface-500">Contract</span>
-                    <a href={`https://sepolia.etherscan.io/address/${FHENIX_MARKETS_ADDRESS}`} target="_blank" rel="noopener noreferrer"
-                      className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
-                      {FHENIX_MARKETS_ADDRESS.slice(0, 12)}... <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                </div>
 
-                {/* Verify On-Chain */}
-                {market.transactionId && market.transactionId.startsWith('0x') && (
-                  <a
-                    href={`https://sepolia.etherscan.io/tx/${market.transactionId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-4 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-brand-500/8 border border-brand-500/15 text-brand-400 hover:bg-brand-500/15 hover:border-brand-500/30 transition-all text-xs font-semibold"
-                  >
-                    <Shield className="w-3.5 h-3.5" />
-                    <span>Verify On-Chain</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                )}
-              </div>
+                  {/* Verify On-Chain */}
+                  {market.transactionId && market.transactionId.startsWith('0x') && (
+                    <a
+                      href={`https://sepolia.etherscan.io/tx/${market.transactionId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-4 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-brand-500/8 border border-brand-500/15 text-brand-400 hover:bg-brand-500/15 hover:border-brand-500/30 transition-all text-xs font-semibold"
+                    >
+                      <Shield className="w-3.5 h-3.5" />
+                      <span>Verify On-Chain</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
           </div>

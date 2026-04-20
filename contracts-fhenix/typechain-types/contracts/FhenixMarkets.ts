@@ -23,109 +23,19 @@ import type {
   TypedContractMethod,
 } from "../common";
 
-export declare namespace FhenixMarkets {
-  export type MarketStruct = {
-    id: BytesLike;
-    creator: AddressLike;
-    resolver: AddressLike;
-    questionHash: BytesLike;
-    category: BigNumberish;
-    numOutcomes: BigNumberish;
-    deadline: BigNumberish;
-    resolutionDeadline: BigNumberish;
-    status: BigNumberish;
-    createdAt: BigNumberish;
-  };
+export type InEuint8Struct = {
+  ctHash: BigNumberish;
+  securityZone: BigNumberish;
+  utype: BigNumberish;
+  signature: BytesLike;
+};
 
-  export type MarketStructOutput = [
-    id: string,
-    creator: string,
-    resolver: string,
-    questionHash: string,
-    category: bigint,
-    numOutcomes: bigint,
-    deadline: bigint,
-    resolutionDeadline: bigint,
-    status: bigint,
-    createdAt: bigint
-  ] & {
-    id: string;
-    creator: string;
-    resolver: string;
-    questionHash: string;
-    category: bigint;
-    numOutcomes: bigint;
-    deadline: bigint;
-    resolutionDeadline: bigint;
-    status: bigint;
-    createdAt: bigint;
-  };
-
-  export type AMMPoolStruct = {
-    reserve1: BigNumberish;
-    reserve2: BigNumberish;
-    reserve3: BigNumberish;
-    reserve4: BigNumberish;
-    totalLiquidity: BigNumberish;
-    totalLPShares: BigNumberish;
-    totalVolume: BigNumberish;
-  };
-
-  export type AMMPoolStructOutput = [
-    reserve1: bigint,
-    reserve2: bigint,
-    reserve3: bigint,
-    reserve4: bigint,
-    totalLiquidity: bigint,
-    totalLPShares: bigint,
-    totalVolume: bigint
-  ] & {
-    reserve1: bigint;
-    reserve2: bigint;
-    reserve3: bigint;
-    reserve4: bigint;
-    totalLiquidity: bigint;
-    totalLPShares: bigint;
-    totalVolume: bigint;
-  };
-
-  export type VoteTallyStruct = {
-    outcome1Bonds: BigNumberish;
-    outcome2Bonds: BigNumberish;
-    outcome3Bonds: BigNumberish;
-    outcome4Bonds: BigNumberish;
-    totalVoters: BigNumberish;
-    totalBonded: BigNumberish;
-    votingDeadline: BigNumberish;
-    disputeDeadline: BigNumberish;
-    finalized: boolean;
-    winningOutcome: BigNumberish;
-  };
-
-  export type VoteTallyStructOutput = [
-    outcome1Bonds: bigint,
-    outcome2Bonds: bigint,
-    outcome3Bonds: bigint,
-    outcome4Bonds: bigint,
-    totalVoters: bigint,
-    totalBonded: bigint,
-    votingDeadline: bigint,
-    disputeDeadline: bigint,
-    finalized: boolean,
-    winningOutcome: bigint
-  ] & {
-    outcome1Bonds: bigint;
-    outcome2Bonds: bigint;
-    outcome3Bonds: bigint;
-    outcome4Bonds: bigint;
-    totalVoters: bigint;
-    totalBonded: bigint;
-    votingDeadline: bigint;
-    disputeDeadline: bigint;
-    finalized: boolean;
-    winningOutcome: bigint;
-  };
-}
+export type InEuint8StructOutput = [
+  ctHash: bigint,
+  securityZone: bigint,
+  utype: bigint,
+  signature: string
+] & { ctHash: bigint; securityZone: bigint; utype: bigint; signature: string };
 
 export interface FhenixMarketsInterface extends Interface {
   getFunction(
@@ -152,7 +62,6 @@ export interface FhenixMarketsInterface extends Interface {
       | "WINNER_CLAIM_PRIORITY"
       | "addLiquidity"
       | "ammPools"
-      | "approveTreasuryProposal"
       | "buyShares"
       | "cancelMarket"
       | "claimDisputeBond"
@@ -165,31 +74,24 @@ export interface FhenixMarketsInterface extends Interface {
       | "createMarket"
       | "deployer"
       | "disputeResolution"
-      | "executeTreasuryProposal"
       | "executeUnshield"
       | "finalizeVotes"
       | "getEncLPBalance"
       | "getEncShareBalance"
-      | "getMarket"
-      | "getPool"
       | "getPrices"
-      | "getVoteTally"
-      | "initMultisig"
       | "marketCount"
       | "marketCredits"
       | "marketFees"
       | "markets"
-      | "multisig"
-      | "multisigApprovals"
       | "nextUnshieldId"
-      | "proposeTreasuryWithdrawal"
       | "publicLPBalances"
       | "publicShareBalances"
       | "redeemShares"
       | "requestUnshieldLP"
       | "requestUnshieldShares"
+      | "requestVoteDecryption"
+      | "requestVoterDecryption"
       | "sellShares"
-      | "treasuryProposals"
       | "unshieldRequests"
       | "voteOutcome"
       | "voteTallies"
@@ -205,16 +107,12 @@ export interface FhenixMarketsInterface extends Interface {
       | "MarketCancelled"
       | "MarketClosed"
       | "MarketCreated"
-      | "MultisigInitialized"
       | "RefundClaimed"
       | "ResolutionConfirmed"
       | "ResolutionDisputed"
       | "SharesBought"
       | "SharesRedeemed"
       | "SharesSold"
-      | "TreasuryProposalApproved"
-      | "TreasuryProposalCreated"
-      | "TreasuryProposalExecuted"
       | "UnshieldExecuted"
       | "UnshieldRequested"
       | "VoteSubmitted"
@@ -307,12 +205,8 @@ export interface FhenixMarketsInterface extends Interface {
   ): string;
   encodeFunctionData(functionFragment: "ammPools", values: [BytesLike]): string;
   encodeFunctionData(
-    functionFragment: "approveTreasuryProposal",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
     functionFragment: "buyShares",
-    values: [BytesLike, BigNumberish, BigNumberish]
+    values: [BytesLike, BigNumberish, InEuint8Struct, BigNumberish]
   ): string;
   encodeFunctionData(
     functionFragment: "cancelMarket",
@@ -363,10 +257,6 @@ export interface FhenixMarketsInterface extends Interface {
     values: [BytesLike, BigNumberish]
   ): string;
   encodeFunctionData(
-    functionFragment: "executeTreasuryProposal",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
     functionFragment: "executeUnshield",
     values: [BigNumberish]
   ): string;
@@ -383,21 +273,8 @@ export interface FhenixMarketsInterface extends Interface {
     values: [BytesLike, BigNumberish]
   ): string;
   encodeFunctionData(
-    functionFragment: "getMarket",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(functionFragment: "getPool", values: [BytesLike]): string;
-  encodeFunctionData(
     functionFragment: "getPrices",
     values: [BytesLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "getVoteTally",
-    values: [BytesLike]
-  ): string;
-  encodeFunctionData(
-    functionFragment: "initMultisig",
-    values: [AddressLike, AddressLike, AddressLike]
   ): string;
   encodeFunctionData(
     functionFragment: "marketCount",
@@ -412,18 +289,9 @@ export interface FhenixMarketsInterface extends Interface {
     values: [BytesLike]
   ): string;
   encodeFunctionData(functionFragment: "markets", values: [BytesLike]): string;
-  encodeFunctionData(functionFragment: "multisig", values?: undefined): string;
-  encodeFunctionData(
-    functionFragment: "multisigApprovals",
-    values: [BytesLike]
-  ): string;
   encodeFunctionData(
     functionFragment: "nextUnshieldId",
     values?: undefined
-  ): string;
-  encodeFunctionData(
-    functionFragment: "proposeTreasuryWithdrawal",
-    values: [AddressLike, BigNumberish]
   ): string;
   encodeFunctionData(
     functionFragment: "publicLPBalances",
@@ -446,12 +314,16 @@ export interface FhenixMarketsInterface extends Interface {
     values: [BytesLike, BigNumberish, BigNumberish]
   ): string;
   encodeFunctionData(
-    functionFragment: "sellShares",
-    values: [BytesLike, BigNumberish, BigNumberish, BigNumberish]
+    functionFragment: "requestVoteDecryption",
+    values: [BytesLike]
   ): string;
   encodeFunctionData(
-    functionFragment: "treasuryProposals",
+    functionFragment: "requestVoterDecryption",
     values: [BytesLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "sellShares",
+    values: [BytesLike, BigNumberish, BigNumberish, BigNumberish]
   ): string;
   encodeFunctionData(
     functionFragment: "unshieldRequests",
@@ -459,7 +331,7 @@ export interface FhenixMarketsInterface extends Interface {
   ): string;
   encodeFunctionData(
     functionFragment: "voteOutcome",
-    values: [BytesLike, BigNumberish]
+    values: [BytesLike, InEuint8Struct]
   ): string;
   encodeFunctionData(
     functionFragment: "voteTallies",
@@ -557,10 +429,6 @@ export interface FhenixMarketsInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(functionFragment: "ammPools", data: BytesLike): Result;
-  decodeFunctionResult(
-    functionFragment: "approveTreasuryProposal",
-    data: BytesLike
-  ): Result;
   decodeFunctionResult(functionFragment: "buyShares", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "cancelMarket",
@@ -604,10 +472,6 @@ export interface FhenixMarketsInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(
-    functionFragment: "executeTreasuryProposal",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
     functionFragment: "executeUnshield",
     data: BytesLike
   ): Result;
@@ -623,17 +487,7 @@ export interface FhenixMarketsInterface extends Interface {
     functionFragment: "getEncShareBalance",
     data: BytesLike
   ): Result;
-  decodeFunctionResult(functionFragment: "getMarket", data: BytesLike): Result;
-  decodeFunctionResult(functionFragment: "getPool", data: BytesLike): Result;
   decodeFunctionResult(functionFragment: "getPrices", data: BytesLike): Result;
-  decodeFunctionResult(
-    functionFragment: "getVoteTally",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "initMultisig",
-    data: BytesLike
-  ): Result;
   decodeFunctionResult(
     functionFragment: "marketCount",
     data: BytesLike
@@ -644,17 +498,8 @@ export interface FhenixMarketsInterface extends Interface {
   ): Result;
   decodeFunctionResult(functionFragment: "marketFees", data: BytesLike): Result;
   decodeFunctionResult(functionFragment: "markets", data: BytesLike): Result;
-  decodeFunctionResult(functionFragment: "multisig", data: BytesLike): Result;
-  decodeFunctionResult(
-    functionFragment: "multisigApprovals",
-    data: BytesLike
-  ): Result;
   decodeFunctionResult(
     functionFragment: "nextUnshieldId",
-    data: BytesLike
-  ): Result;
-  decodeFunctionResult(
-    functionFragment: "proposeTreasuryWithdrawal",
     data: BytesLike
   ): Result;
   decodeFunctionResult(
@@ -677,11 +522,15 @@ export interface FhenixMarketsInterface extends Interface {
     functionFragment: "requestUnshieldShares",
     data: BytesLike
   ): Result;
-  decodeFunctionResult(functionFragment: "sellShares", data: BytesLike): Result;
   decodeFunctionResult(
-    functionFragment: "treasuryProposals",
+    functionFragment: "requestVoteDecryption",
     data: BytesLike
   ): Result;
+  decodeFunctionResult(
+    functionFragment: "requestVoterDecryption",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(functionFragment: "sellShares", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "unshieldRequests",
     data: BytesLike
@@ -786,31 +635,6 @@ export namespace MarketCreatedEvent {
   export type LogDescription = TypedLogDescription<Event>;
 }
 
-export namespace MultisigInitializedEvent {
-  export type InputTuple = [
-    signer1: AddressLike,
-    signer2: AddressLike,
-    signer3: AddressLike,
-    threshold: BigNumberish
-  ];
-  export type OutputTuple = [
-    signer1: string,
-    signer2: string,
-    signer3: string,
-    threshold: bigint
-  ];
-  export interface OutputObject {
-    signer1: string;
-    signer2: string;
-    signer3: string;
-    threshold: bigint;
-  }
-  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
-  export type Filter = TypedDeferredTopicFilter<Event>;
-  export type Log = TypedEventLog<Event>;
-  export type LogDescription = TypedLogDescription<Event>;
-}
-
 export namespace RefundClaimedEvent {
   export type InputTuple = [marketId: BytesLike, claimer: AddressLike];
   export type OutputTuple = [marketId: string, claimer: string];
@@ -891,63 +715,6 @@ export namespace SharesSoldEvent {
   export interface OutputObject {
     marketId: string;
     seller: string;
-  }
-  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
-  export type Filter = TypedDeferredTopicFilter<Event>;
-  export type Log = TypedEventLog<Event>;
-  export type LogDescription = TypedLogDescription<Event>;
-}
-
-export namespace TreasuryProposalApprovedEvent {
-  export type InputTuple = [proposalId: BytesLike, signer: AddressLike];
-  export type OutputTuple = [proposalId: string, signer: string];
-  export interface OutputObject {
-    proposalId: string;
-    signer: string;
-  }
-  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
-  export type Filter = TypedDeferredTopicFilter<Event>;
-  export type Log = TypedEventLog<Event>;
-  export type LogDescription = TypedLogDescription<Event>;
-}
-
-export namespace TreasuryProposalCreatedEvent {
-  export type InputTuple = [
-    proposalId: BytesLike,
-    recipient: AddressLike,
-    amount: BigNumberish
-  ];
-  export type OutputTuple = [
-    proposalId: string,
-    recipient: string,
-    amount: bigint
-  ];
-  export interface OutputObject {
-    proposalId: string;
-    recipient: string;
-    amount: bigint;
-  }
-  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
-  export type Filter = TypedDeferredTopicFilter<Event>;
-  export type Log = TypedEventLog<Event>;
-  export type LogDescription = TypedLogDescription<Event>;
-}
-
-export namespace TreasuryProposalExecutedEvent {
-  export type InputTuple = [
-    proposalId: BytesLike,
-    recipient: AddressLike,
-    amount: BigNumberish
-  ];
-  export type OutputTuple = [
-    proposalId: string,
-    recipient: string,
-    amount: bigint
-  ];
-  export interface OutputObject {
-    proposalId: string;
-    recipient: string;
-    amount: bigint;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1123,14 +890,13 @@ export interface FhenixMarkets extends BaseContract {
     "view"
   >;
 
-  approveTreasuryProposal: TypedContractMethod<
-    [proposalId: BytesLike],
-    [void],
-    "nonpayable"
-  >;
-
   buyShares: TypedContractMethod<
-    [marketId: BytesLike, outcome: BigNumberish, minSharesOut: BigNumberish],
+    [
+      marketId: BytesLike,
+      outcome: BigNumberish,
+      encOutcome: InEuint8Struct,
+      minSharesOut: BigNumberish
+    ],
     [void],
     "payable"
   >;
@@ -1196,12 +962,6 @@ export interface FhenixMarkets extends BaseContract {
     "payable"
   >;
 
-  executeTreasuryProposal: TypedContractMethod<
-    [proposalId: BytesLike],
-    [void],
-    "nonpayable"
-  >;
-
   executeUnshield: TypedContractMethod<
     [reqId: BigNumberish],
     [void],
@@ -1222,18 +982,6 @@ export interface FhenixMarkets extends BaseContract {
     "view"
   >;
 
-  getMarket: TypedContractMethod<
-    [marketId: BytesLike],
-    [FhenixMarkets.MarketStructOutput],
-    "view"
-  >;
-
-  getPool: TypedContractMethod<
-    [marketId: BytesLike],
-    [FhenixMarkets.AMMPoolStructOutput],
-    "view"
-  >;
-
   getPrices: TypedContractMethod<
     [marketId: BytesLike],
     [
@@ -1245,18 +993,6 @@ export interface FhenixMarkets extends BaseContract {
       }
     ],
     "view"
-  >;
-
-  getVoteTally: TypedContractMethod<
-    [marketId: BytesLike],
-    [FhenixMarkets.VoteTallyStructOutput],
-    "view"
-  >;
-
-  initMultisig: TypedContractMethod<
-    [signer1: AddressLike, signer2: AddressLike, signer3: AddressLike],
-    [void],
-    "nonpayable"
   >;
 
   marketCount: TypedContractMethod<[], [bigint], "view">;
@@ -1299,29 +1035,7 @@ export interface FhenixMarkets extends BaseContract {
     "view"
   >;
 
-  multisig: TypedContractMethod<
-    [],
-    [
-      [string, string, string, bigint, boolean] & {
-        signer1: string;
-        signer2: string;
-        signer3: string;
-        threshold: bigint;
-        initialized: boolean;
-      }
-    ],
-    "view"
-  >;
-
-  multisigApprovals: TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
-
   nextUnshieldId: TypedContractMethod<[], [bigint], "view">;
-
-  proposeTreasuryWithdrawal: TypedContractMethod<
-    [recipient: AddressLike, amount: BigNumberish],
-    [string],
-    "nonpayable"
-  >;
 
   publicLPBalances: TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
 
@@ -1345,6 +1059,18 @@ export interface FhenixMarkets extends BaseContract {
     "nonpayable"
   >;
 
+  requestVoteDecryption: TypedContractMethod<
+    [marketId: BytesLike],
+    [void],
+    "nonpayable"
+  >;
+
+  requestVoterDecryption: TypedContractMethod<
+    [marketId: BytesLike],
+    [void],
+    "nonpayable"
+  >;
+
   sellShares: TypedContractMethod<
     [
       marketId: BytesLike,
@@ -1354,22 +1080,6 @@ export interface FhenixMarkets extends BaseContract {
     ],
     [void],
     "nonpayable"
-  >;
-
-  treasuryProposals: TypedContractMethod<
-    [arg0: BytesLike],
-    [
-      [string, string, string, bigint, bigint, boolean, bigint] & {
-        id: string;
-        proposer: string;
-        recipient: string;
-        amount: bigint;
-        approvals: bigint;
-        executed: boolean;
-        createdAt: bigint;
-      }
-    ],
-    "view"
   >;
 
   unshieldRequests: TypedContractMethod<
@@ -1387,7 +1097,7 @@ export interface FhenixMarkets extends BaseContract {
   >;
 
   voteOutcome: TypedContractMethod<
-    [marketId: BytesLike, outcome: BigNumberish],
+    [marketId: BytesLike, encOutcome: InEuint8Struct],
     [void],
     "payable"
   >;
@@ -1396,27 +1106,29 @@ export interface FhenixMarkets extends BaseContract {
     [arg0: BytesLike],
     [
       [
-        bigint,
-        bigint,
-        bigint,
-        bigint,
+        string,
+        string,
+        string,
+        string,
         bigint,
         bigint,
         bigint,
         bigint,
         boolean,
-        bigint
+        bigint,
+        boolean
       ] & {
-        outcome1Bonds: bigint;
-        outcome2Bonds: bigint;
-        outcome3Bonds: bigint;
-        outcome4Bonds: bigint;
+        encOutcome1Bonds: string;
+        encOutcome2Bonds: string;
+        encOutcome3Bonds: string;
+        encOutcome4Bonds: string;
         totalVoters: bigint;
         totalBonded: bigint;
         votingDeadline: bigint;
         disputeDeadline: bigint;
         finalized: boolean;
         winningOutcome: bigint;
+        decryptionRequested: boolean;
       }
     ],
     "view"
@@ -1525,12 +1237,14 @@ export interface FhenixMarkets extends BaseContract {
     "view"
   >;
   getFunction(
-    nameOrSignature: "approveTreasuryProposal"
-  ): TypedContractMethod<[proposalId: BytesLike], [void], "nonpayable">;
-  getFunction(
     nameOrSignature: "buyShares"
   ): TypedContractMethod<
-    [marketId: BytesLike, outcome: BigNumberish, minSharesOut: BigNumberish],
+    [
+      marketId: BytesLike,
+      outcome: BigNumberish,
+      encOutcome: InEuint8Struct,
+      minSharesOut: BigNumberish
+    ],
     [void],
     "payable"
   >;
@@ -1591,9 +1305,6 @@ export interface FhenixMarkets extends BaseContract {
     "payable"
   >;
   getFunction(
-    nameOrSignature: "executeTreasuryProposal"
-  ): TypedContractMethod<[proposalId: BytesLike], [void], "nonpayable">;
-  getFunction(
     nameOrSignature: "executeUnshield"
   ): TypedContractMethod<[reqId: BigNumberish], [void], "nonpayable">;
   getFunction(
@@ -1610,20 +1321,6 @@ export interface FhenixMarkets extends BaseContract {
     "view"
   >;
   getFunction(
-    nameOrSignature: "getMarket"
-  ): TypedContractMethod<
-    [marketId: BytesLike],
-    [FhenixMarkets.MarketStructOutput],
-    "view"
-  >;
-  getFunction(
-    nameOrSignature: "getPool"
-  ): TypedContractMethod<
-    [marketId: BytesLike],
-    [FhenixMarkets.AMMPoolStructOutput],
-    "view"
-  >;
-  getFunction(
     nameOrSignature: "getPrices"
   ): TypedContractMethod<
     [marketId: BytesLike],
@@ -1636,20 +1333,6 @@ export interface FhenixMarkets extends BaseContract {
       }
     ],
     "view"
-  >;
-  getFunction(
-    nameOrSignature: "getVoteTally"
-  ): TypedContractMethod<
-    [marketId: BytesLike],
-    [FhenixMarkets.VoteTallyStructOutput],
-    "view"
-  >;
-  getFunction(
-    nameOrSignature: "initMultisig"
-  ): TypedContractMethod<
-    [signer1: AddressLike, signer2: AddressLike, signer3: AddressLike],
-    [void],
-    "nonpayable"
   >;
   getFunction(
     nameOrSignature: "marketCount"
@@ -1696,33 +1379,8 @@ export interface FhenixMarkets extends BaseContract {
     "view"
   >;
   getFunction(
-    nameOrSignature: "multisig"
-  ): TypedContractMethod<
-    [],
-    [
-      [string, string, string, bigint, boolean] & {
-        signer1: string;
-        signer2: string;
-        signer3: string;
-        threshold: bigint;
-        initialized: boolean;
-      }
-    ],
-    "view"
-  >;
-  getFunction(
-    nameOrSignature: "multisigApprovals"
-  ): TypedContractMethod<[arg0: BytesLike], [boolean], "view">;
-  getFunction(
     nameOrSignature: "nextUnshieldId"
   ): TypedContractMethod<[], [bigint], "view">;
-  getFunction(
-    nameOrSignature: "proposeTreasuryWithdrawal"
-  ): TypedContractMethod<
-    [recipient: AddressLike, amount: BigNumberish],
-    [string],
-    "nonpayable"
-  >;
   getFunction(
     nameOrSignature: "publicLPBalances"
   ): TypedContractMethod<[arg0: BytesLike], [bigint], "view">;
@@ -1751,6 +1409,12 @@ export interface FhenixMarkets extends BaseContract {
     "nonpayable"
   >;
   getFunction(
+    nameOrSignature: "requestVoteDecryption"
+  ): TypedContractMethod<[marketId: BytesLike], [void], "nonpayable">;
+  getFunction(
+    nameOrSignature: "requestVoterDecryption"
+  ): TypedContractMethod<[marketId: BytesLike], [void], "nonpayable">;
+  getFunction(
     nameOrSignature: "sellShares"
   ): TypedContractMethod<
     [
@@ -1761,23 +1425,6 @@ export interface FhenixMarkets extends BaseContract {
     ],
     [void],
     "nonpayable"
-  >;
-  getFunction(
-    nameOrSignature: "treasuryProposals"
-  ): TypedContractMethod<
-    [arg0: BytesLike],
-    [
-      [string, string, string, bigint, bigint, boolean, bigint] & {
-        id: string;
-        proposer: string;
-        recipient: string;
-        amount: bigint;
-        approvals: bigint;
-        executed: boolean;
-        createdAt: bigint;
-      }
-    ],
-    "view"
   >;
   getFunction(
     nameOrSignature: "unshieldRequests"
@@ -1797,7 +1444,7 @@ export interface FhenixMarkets extends BaseContract {
   getFunction(
     nameOrSignature: "voteOutcome"
   ): TypedContractMethod<
-    [marketId: BytesLike, outcome: BigNumberish],
+    [marketId: BytesLike, encOutcome: InEuint8Struct],
     [void],
     "payable"
   >;
@@ -1807,27 +1454,29 @@ export interface FhenixMarkets extends BaseContract {
     [arg0: BytesLike],
     [
       [
-        bigint,
-        bigint,
-        bigint,
-        bigint,
+        string,
+        string,
+        string,
+        string,
         bigint,
         bigint,
         bigint,
         bigint,
         boolean,
-        bigint
+        bigint,
+        boolean
       ] & {
-        outcome1Bonds: bigint;
-        outcome2Bonds: bigint;
-        outcome3Bonds: bigint;
-        outcome4Bonds: bigint;
+        encOutcome1Bonds: string;
+        encOutcome2Bonds: string;
+        encOutcome3Bonds: string;
+        encOutcome4Bonds: string;
         totalVoters: bigint;
         totalBonded: bigint;
         votingDeadline: bigint;
         disputeDeadline: bigint;
         finalized: boolean;
         winningOutcome: bigint;
+        decryptionRequested: boolean;
       }
     ],
     "view"
@@ -1882,13 +1531,6 @@ export interface FhenixMarkets extends BaseContract {
     MarketCreatedEvent.OutputObject
   >;
   getEvent(
-    key: "MultisigInitialized"
-  ): TypedContractEvent<
-    MultisigInitializedEvent.InputTuple,
-    MultisigInitializedEvent.OutputTuple,
-    MultisigInitializedEvent.OutputObject
-  >;
-  getEvent(
     key: "RefundClaimed"
   ): TypedContractEvent<
     RefundClaimedEvent.InputTuple,
@@ -1929,27 +1571,6 @@ export interface FhenixMarkets extends BaseContract {
     SharesSoldEvent.InputTuple,
     SharesSoldEvent.OutputTuple,
     SharesSoldEvent.OutputObject
-  >;
-  getEvent(
-    key: "TreasuryProposalApproved"
-  ): TypedContractEvent<
-    TreasuryProposalApprovedEvent.InputTuple,
-    TreasuryProposalApprovedEvent.OutputTuple,
-    TreasuryProposalApprovedEvent.OutputObject
-  >;
-  getEvent(
-    key: "TreasuryProposalCreated"
-  ): TypedContractEvent<
-    TreasuryProposalCreatedEvent.InputTuple,
-    TreasuryProposalCreatedEvent.OutputTuple,
-    TreasuryProposalCreatedEvent.OutputObject
-  >;
-  getEvent(
-    key: "TreasuryProposalExecuted"
-  ): TypedContractEvent<
-    TreasuryProposalExecutedEvent.InputTuple,
-    TreasuryProposalExecutedEvent.OutputTuple,
-    TreasuryProposalExecutedEvent.OutputObject
   >;
   getEvent(
     key: "UnshieldExecuted"
@@ -2036,17 +1657,6 @@ export interface FhenixMarkets extends BaseContract {
       MarketCreatedEvent.OutputObject
     >;
 
-    "MultisigInitialized(address,address,address,uint8)": TypedContractEvent<
-      MultisigInitializedEvent.InputTuple,
-      MultisigInitializedEvent.OutputTuple,
-      MultisigInitializedEvent.OutputObject
-    >;
-    MultisigInitialized: TypedContractEvent<
-      MultisigInitializedEvent.InputTuple,
-      MultisigInitializedEvent.OutputTuple,
-      MultisigInitializedEvent.OutputObject
-    >;
-
     "RefundClaimed(bytes32,address)": TypedContractEvent<
       RefundClaimedEvent.InputTuple,
       RefundClaimedEvent.OutputTuple,
@@ -2111,39 +1721,6 @@ export interface FhenixMarkets extends BaseContract {
       SharesSoldEvent.InputTuple,
       SharesSoldEvent.OutputTuple,
       SharesSoldEvent.OutputObject
-    >;
-
-    "TreasuryProposalApproved(bytes32,address)": TypedContractEvent<
-      TreasuryProposalApprovedEvent.InputTuple,
-      TreasuryProposalApprovedEvent.OutputTuple,
-      TreasuryProposalApprovedEvent.OutputObject
-    >;
-    TreasuryProposalApproved: TypedContractEvent<
-      TreasuryProposalApprovedEvent.InputTuple,
-      TreasuryProposalApprovedEvent.OutputTuple,
-      TreasuryProposalApprovedEvent.OutputObject
-    >;
-
-    "TreasuryProposalCreated(bytes32,address,uint128)": TypedContractEvent<
-      TreasuryProposalCreatedEvent.InputTuple,
-      TreasuryProposalCreatedEvent.OutputTuple,
-      TreasuryProposalCreatedEvent.OutputObject
-    >;
-    TreasuryProposalCreated: TypedContractEvent<
-      TreasuryProposalCreatedEvent.InputTuple,
-      TreasuryProposalCreatedEvent.OutputTuple,
-      TreasuryProposalCreatedEvent.OutputObject
-    >;
-
-    "TreasuryProposalExecuted(bytes32,address,uint128)": TypedContractEvent<
-      TreasuryProposalExecutedEvent.InputTuple,
-      TreasuryProposalExecutedEvent.OutputTuple,
-      TreasuryProposalExecutedEvent.OutputObject
-    >;
-    TreasuryProposalExecuted: TypedContractEvent<
-      TreasuryProposalExecutedEvent.InputTuple,
-      TreasuryProposalExecutedEvent.OutputTuple,
-      TreasuryProposalExecutedEvent.OutputObject
     >;
 
     "UnshieldExecuted(uint256,bool)": TypedContractEvent<

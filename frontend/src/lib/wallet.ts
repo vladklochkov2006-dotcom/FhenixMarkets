@@ -5,7 +5,6 @@
 // Keeps type exports and utility functions used by store.ts.
 // ============================================================================
 
-import { devLog, devWarn } from './logger';
 
 export type NetworkType = 'mainnet' | 'testnet';
 
@@ -202,11 +201,11 @@ export class WalletManager {
   }
 
   onAccountChange(_callback: (account: WalletAccount | null) => void): () => void {
-    return () => {};
+    return () => { };
   }
 
   onNetworkChange(_callback: (network: NetworkType) => void): () => void {
-    return () => {};
+    return () => { };
   }
 }
 
@@ -221,19 +220,19 @@ export const walletManager = new WalletManager();
 // ============================================================================
 
 const WALLET_DISPLAY_MAP: Record<string, { name: string; icon: string }> = {
-  metamask:         { name: 'MetaMask',         icon: '🦊' },
-  coinbase_wallet:  { name: 'Coinbase Wallet',  icon: '🔵' },
-  wallet_connect:   { name: 'WalletConnect',    icon: '🔗' },
-  rainbow:          { name: 'Rainbow',          icon: '🌈' },
-  rabby:            { name: 'Rabby',            icon: '🐰' },
-  phantom:          { name: 'Phantom',          icon: '👻' },
-  zerion:           { name: 'Zerion',           icon: '⚡' },
-  brave_wallet:     { name: 'Brave Wallet',     icon: '🦁' },
-  trust:            { name: 'Trust Wallet',     icon: '🛡️' },
-  okx_wallet:       { name: 'OKX Wallet',       icon: '⭕' },
-  privy:            { name: 'Privy Wallet',     icon: '🔐' },  // embedded wallet
-  demo:             { name: 'Demo Mode',        icon: '🎮' },
-  unknown:          { name: 'Wallet',           icon: '💳' },
+  metamask: { name: 'MetaMask', icon: '🦊' },
+  coinbase_wallet: { name: 'Coinbase Wallet', icon: '🔵' },
+  wallet_connect: { name: 'WalletConnect', icon: '🔗' },
+  rainbow: { name: 'Rainbow', icon: '🌈' },
+  rabby: { name: 'Rabby', icon: '🐰' },
+  phantom: { name: 'Phantom', icon: '👻' },
+  zerion: { name: 'Zerion', icon: '⚡' },
+  brave_wallet: { name: 'Brave Wallet', icon: '🦁' },
+  trust: { name: 'Trust Wallet', icon: '🛡️' },
+  okx_wallet: { name: 'OKX Wallet', icon: '⭕' },
+  privy: { name: 'Privy Wallet', icon: '🔐' },  // embedded wallet
+  demo: { name: 'Demo Mode', icon: '🎮' },
+  unknown: { name: 'Wallet', icon: '💳' },
 };
 
 /**

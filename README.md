@@ -6,7 +6,7 @@
 
 Privacy-preserving prediction market protocol powered by Fully Homomorphic Encryption on Ethereum
 
-[![Live on Sepolia](https://img.shields.io/badge/Live-Sepolia_Testnet-0AD9DC?style=for-the-badge)](https://sepolia.etherscan.io/address/0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0)
+[![Live on Fhenix](https://img.shields.io/badge/Live-Fhenix_Helium-8B5CF6?style=for-the-badge)](https://explorer.helium.fhenix.zone/address/0x050262EDE0E6320B2A9AB463776D87cdAfD44572)
 [![Fhenix CoFHE](https://img.shields.io/badge/FHE-Fhenix_CoFHE-8B5CF6?style=for-the-badge)](https://www.fhenix.io/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](./LICENSE)
 
@@ -25,12 +25,13 @@ This creates real problems: front-running, copy-trading, social pressure, and pr
 
 ## The Solution
 
-Fhenix Markets uses **Fully Homomorphic Encryption (FHE)** via the Fhenix CoFHE coprocessor to encrypt user positions on-chain. The smart contract computes on encrypted data — share balances are never stored in plaintext.
+Fhenix Markets uses **Fully Homomorphic Encryption (FHE)** via the Fhenix CoFHE coprocessor to encrypt user positions on-chain. The smart contract computes on encrypted data — share balances and even **trade inputs** are never stored or transmitted in plaintext.
 
 ### What's Private vs Public
 
 | Data | Visibility | Why |
 |------|-----------|-----|
+| **Trade Outcome** | **Encrypted** (`InEuint8`) | Client-side encryption via `cofhejs` — observers don't know what you bet on |
 | **Share balances** | **Encrypted** (`euint128`) | FHE — only owner can decrypt with permit |
 | **LP positions** | **Encrypted** (`euint128`) | FHE — private liquidity provision |
 | **Event logs** | **Minimal** | Events emit only `(marketId, address)` — no amounts, no outcomes |
@@ -40,131 +41,67 @@ Fhenix Markets uses **Fully Homomorphic Encryption (FHE)** via the Fhenix CoFHE 
 ### How FHE Works in This Protocol
 
 ```
-User calls buyShares(marketId, outcome, minSharesOut) + sends ETH
-                              ↓
+    User selects Outcome → cofhejs.encrypt(outcome) → encrypted bytes
+                               ↓
+    Contract call: buyShares(marketId, outcomeIndex, encrypted_outcome, ...)
+                               ↓
     Contract computes AMM math on public reserves (price discovery)
-                              ↓
+                               ↓
     Shares calculated → FHE.asEuint128(sharesOut) → encrypted
-                              ↓
-    encShareBalances[key] = FHE.add(current, encrypted_shares)
-                              ↓
-    Event emitted: SharesBought(marketId, buyer)  ← no amounts leaked
-                              ↓
-    CoFHE coprocessor handles encryption off-chain (TaskCreated event)
+                               ↓
+    encShareBalances[key] = FHE.add(current, FHE.select(match, encShares, 0))
+                               ↓
+    Event emitted: SharesBought(marketId, buyer)  ← no amounts or outcomes leaked
+                               ↓
+    CoFHE coprocessor handles asynchronous decryption during resolution
 ```
 
 Nobody can call `balanceOf()` to see your position. Only you can decrypt via an FHE permit.
 
 ## Smart Contracts
 
-Deployed on **Ethereum Sepolia** with Fhenix CoFHE coprocessor:
+Deployed on **Fhenix Helium (Testnet)**:
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| **FhenixMarkets** | [`0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0`](https://sepolia.etherscan.io/address/0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0) | Markets, AMM, trading, resolution |
-| **FhenixGovernance** | [`0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656`](https://sepolia.etherscan.io/address/0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656) | DAO governance, resolver registry, slashing |
+| **FhenixMarkets** | [`0x050262EDE0E6320B2A9AB463776D87cdAfD44572`](https://explorer.helium.fhenix.zone/address/0x050262EDE0E6320B2A9AB463776D87cdAfD44572) | Markets, AMM, trading, encrypted resolution |
+| **FhenixGovernance** | [`0x08e04595ACC18e4282CacB7c907b592a3031cA94`](https://explorer.helium.fhenix.zone/address/0x08e04595ACC18e4282CacB7c907b592a3031cA94) | DAO governance, resolver registry, voter bond tallies (`euint128`) |
 
 ### FhenixMarkets — Core Functions
 
-**Trading:**
+**Trading (Client-Side Encrypted):**
 | Function | Description |
 |----------|-------------|
-| `createMarket` | Create market with question, outcomes (2-4), deadlines, initial ETH liquidity |
-| `buyShares` | Buy outcome shares via FPMM. Shares stored as `euint128` (encrypted) |
-| `sellShares` | Sell shares back to the pool. FHE.sub reverts on insufficient balance |
-| `addLiquidity` | Provide liquidity, receive encrypted LP shares |
-| `withdrawLiquidity` | Remove liquidity, burn LP shares |
+| `buyShares` | Buy shares using `InEuint8` encrypted outcome. Position is hidden. |
+| `sellShares` | Sell shares back to the pool. FHE.sub reverts on insufficient balance. |
+| `addLiquidity` | Provide liquidity, receive encrypted LP shares. |
 
-**Resolution (Multi-Voter Quorum + Dispute):**
+**Resolution (Asynchronous FHE):**
 | Function | Description |
 |----------|-------------|
-| `voteOutcome` | Vote on market outcome with 0.001 ETH bond (min 3 voters required) |
-| `finalizeVotes` | Tally votes after voting window closes |
-| `confirmResolution` | Finalize after 12h dispute window if unchallenged |
-| `disputeResolution` | Challenge with 3x bond — override winning outcome |
-| `claimVoterBond` | Winners claim bond back; losers are slashed |
-
-**Redemption:**
-| Function | Description |
-|----------|-------------|
-| `redeemShares` | Winning shares redeem 1:1 against collateral |
-| `claimRefund` | Get refund if market was cancelled |
-| `withdrawCreatorFees` | Market creator withdraws accumulated fees |
-
-### FhenixGovernance — DAO Functions
-
-Proposals, voting, delegation, resolver registry, multi-resolver panels, slashing, and reward distribution. Uses FHE for encrypted vote weights.
-
-## FPMM (Fixed Product Market Maker)
-
-The AMM uses a Gnosis-style complete-set minting/burning model:
-
-| Operation | Formula |
-|-----------|---------|
-| **Buy** | `shares_out = (r_i + a) - r_i × ∏(r_k / (r_k + a))` for k ≠ i |
-| **Sell** | `shares_needed = r_i_new - r_i + pool_out` where `r_i_new = r_i × ∏(r_k / (r_k - p))` |
-| **Redeem** | Winning shares 1:1 against collateral |
-| **Fees** | 0.5% protocol + 0.5% creator + 1% LP = **2% total** |
-
-Supports 2, 3, or 4 outcome markets (Yes/No, multi-choice).
+| `voteOutcome` | Vote using encrypted outcome (`InEuint8`). Bond tallies are `euint128`. |
+| `requestVoteDecryption` | Trigger CoFHE coprocessor to decrypt the winner once voting ends. |
+| `finalizeVotes` | Finalize the market based on coprocessor output. |
+| `claimVoterBond` | Winners claim bond; requires individual FHE decryption of their vote. |
 
 ## Architecture
 
 ```
 ┌──────────────────────┐     ┌───────────────────────┐
-│   Frontend           │────▶│   Privy Wallet         │
-│   React 18 / Vite    │     │   (EVM wallets)        │
-│   TypeScript          │     │                       │
-│   Tailwind CSS       │     └───────┬───────────────┘
+│   Frontend           │────▶│   FHE SDK (cofhejs)    │
+│   React 18 / Vite    │     │   Client-side encrypt  │
+│   TypeScript          │     └───────┬───────────────┘
 │                      │             │
-│  Pages:              │             ▼
-│  - Landing           │     ┌───────────────────────────────────┐
-│  - Dashboard         │     │   Ethereum Sepolia                │
-│  - Market Detail     │     │                                   │
-│  - Create Market     │     │   FhenixMarkets.sol               │
-│  - My Bets           │     │   ├─ FPMM AMM (public reserves)  │
-│  - Governance        │     │   ├─ encShareBalances (euint128)  │
-│                      │     │   ├─ encLPBalances (euint128)     │
-│                      │     │   └─ Multi-Voter Resolution       │
-└──────┬───────────────┘     │                                   │
-       │                     │   FhenixGovernance.sol             │
-       │                     │   └─ DAO + Resolver Registry      │
-       ▼                     │                                   │
-┌──────────────┐             │   CoFHE Coprocessor               │
-│  Supabase    │             │   └─ Off-chain FHE compute        │
-│  (encrypted) │             └───────────────────────────────────┘
-├──────────────┤
-│  IPFS/Pinata │
-│  (metadata)  │
+└──────┬───────────────┘             ▼
+       │                     ┌───────────────────────────────────┐
+       │                     │   Fhenix Helium (Sepolia)         │
+       │                     │                                   │
+       │                     │   FhenixMarkets.sol               │
+       ▼                     │   ├─ Encrypted Inputs (InEuint8)  │
+┌──────────────┐             │   ├─ encShareBalances (euint128)  │
+│   Wallets    │             │   └─ Async CoFHE Decryption       │
+│   (Privy)    │             └───────────────────────────────────┘
 └──────────────┘
-```
-
-## Project Structure
-
-```
-fhenix-markets/
-├── contracts-fhenix/           # Solidity smart contracts
-│   ├── contracts/
-│   │   ├── FhenixMarkets.sol   # Core market + AMM + FHE balances
-│   │   └── FhenixGovernance.sol # DAO governance + resolver registry
-│   ├── scripts/deploy.ts       # Deployment script
-│   └── hardhat.config.ts
-├── frontend/                   # React application
-│   ├── src/
-│   │   ├── components/         # UI components (modals, panels, cards)
-│   │   ├── hooks/              # React hooks (wallet, transactions)
-│   │   ├── lib/                # Core logic
-│   │   │   ├── contracts.ts    # Contract interaction layer
-│   │   │   ├── amm.ts          # FPMM math (matching on-chain formulas)
-│   │   │   ├── store.ts        # Zustand state management
-│   │   │   ├── market-store.ts # Market data fetching + caching
-│   │   │   ├── config.ts       # Environment configuration
-│   │   │   ├── supabase.ts     # Encrypted bet persistence
-│   │   │   ├── crypto.ts       # AES-256-GCM client-side encryption
-│   │   │   └── abis/           # Contract ABIs
-│   │   └── pages/              # Route pages
-│   └── public/
-└── supabase-schema.sql         # Database schema
 ```
 
 ## Quick Start
@@ -172,16 +109,14 @@ fhenix-markets/
 ### Prerequisites
 
 - Node.js 18+
-- MetaMask or any EVM wallet
-- Sepolia ETH ([faucet](https://sepoliafaucet.com/))
+- Sepolia ETH (bridged to Fhenix) or native Helium tokens
+- [Fhenix Helium RPC](https://docs.fhenix.io/) configured in wallet
 
 ### Frontend
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env
-# Edit .env with your Supabase and Pinata keys (optional)
 npm run dev
 ```
 
@@ -190,29 +125,7 @@ npm run dev
 ```bash
 cd contracts-fhenix
 npm install
-cp .env.example .env
-# Add DEPLOYER_PRIVATE_KEY to .env
-
-npx hardhat compile
 npx hardhat run scripts/deploy.ts --network eth-sepolia
-```
-
-### Environment Variables
-
-```env
-# Contracts (defaults are pre-filled with deployed addresses)
-VITE_MARKETS_CONTRACT=0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0
-VITE_GOVERNANCE_CONTRACT=0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656
-
-# Privy (wallet authentication)
-VITE_PRIVY_APP_ID=your-privy-app-id
-
-# Optional: Supabase (cross-device bet sync with E2E encryption)
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-
-# Optional: IPFS (market metadata)
-VITE_PINATA_JWT=your-pinata-jwt
 ```
 
 ## Tech Stack
@@ -220,31 +133,27 @@ VITE_PINATA_JWT=your-pinata-jwt
 | Layer | Technology |
 |-------|-----------|
 | **Smart Contracts** | Solidity 0.8.25, Hardhat, @fhenixprotocol/cofhe-contracts |
-| **FHE** | Fhenix CoFHE coprocessor (euint128, ebool, FHE.add/sub/select) |
-| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion, PWA |
-| **Wallet** | Privy (MetaMask, WalletConnect, Coinbase, embedded wallets) |
-| **State** | Zustand |
-| **Persistence** | Supabase (AES-256-GCM client-side encrypted) + localStorage |
-| **Metadata** | IPFS via Pinata |
-| **Network** | Ethereum Sepolia (chainId 11155111) |
+| **FHE** | Fhenix CoFHE (euint128, InEuint8, ebool, FHE select/add/sub) |
+| **SDK** | `cofhejs/web` (Client-side encryption / Ethers integration) |
+| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, Framer Motion |
+| **Wallet** | Privy (Embedded & Social Wallets) |
+| **Network** | Fhenix Helium (chainId 11155111) |
 
 ## Privacy Guarantees
 
 **What an on-chain observer sees:**
-- A user sent X ETH to the FhenixMarkets contract
-- A `SharesBought(marketId, buyer)` event was emitted
-- A `TaskCreated` event from the CoFHE coprocessor (FHE computation)
+- A user sent ETH to the FhenixMarkets contract.
+- A transaction was submitted with encrypted calldata (`InEuint8`).
+- A `SharesBought` event was emitted (no outcome, no amount).
 
 **What they cannot determine:**
-- Which outcome the user bet on (not in events)
-- How many shares they received (encrypted in `euint128`)
-- Their total position size (encrypted balance, no `balanceOf`)
-- Their LP position (encrypted in `euint128`)
+- **The Outcome:** The choice is encrypted before it leaves the browser.
+- **The Amount:** Share balances are stored as encrypted `euint128` ciphertexts.
+- **The Winner:** Bond tallies during voting are encrypted until market finalization.
 
-**Known limitations:**
-- `msg.value` is always public on EVM — the amount of ETH sent is visible
-- AMM reserve changes are public — sophisticated analysis of reserve deltas could narrow down trade direction
-- Calldata contains the outcome parameter in plaintext — a future version could use encrypted inputs (`InEuint8`)
+**Solved Limitations:**
+- [x] **Encrypted Inputs:** Calldata no longer contains plaintext outcomes.
+- [x] **Encrypted Resolution:** Voting weights are hidden until the market is finalized.
 
 ## License
 
@@ -256,6 +165,6 @@ MIT License — see [LICENSE](./LICENSE)
 
 **Built with Fhenix CoFHE on Ethereum**
 
-[FhenixMarkets Contract](https://sepolia.etherscan.io/address/0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0) · [FhenixGovernance Contract](https://sepolia.etherscan.io/address/0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656)
+[FhenixMarkets Contract](https://explorer.helium.fhenix.zone/address/0x050262EDE0E6320B2A9AB463776D87cdAfD44572) · [FhenixGovernance Contract](https://explorer.helium.fhenix.zone/address/0x08e04595ACC18e4282CacB7c907b592a3031cA94)
 
 </div>

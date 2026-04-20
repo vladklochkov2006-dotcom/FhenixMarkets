@@ -1,0 +1,2 @@
+﻿src/lib/wallet.ts(8,1): error TS6192: All imports in import declaration are unused.
+src/pages/MarketDetail.tsx(62,10): error TS6133: 'getProgramIdForToken' is declared but its value is never read.

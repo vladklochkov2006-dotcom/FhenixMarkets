@@ -1,0 +1,23 @@
+Deploying contracts with account: 0xd5C9B9a6E16112B8985280c07462E3b358C3844F
+Balance: 0.417460269812448637
+
+--- Deploying FhenixMarkets ---
+FhenixMarkets deployed to: 0x050262EDE0E6320B2A9AB463776D87cdAfD44572
+
+--- Deploying FhenixGovernance ---
+FhenixGovernance deployed to: 0x08e04595ACC18e4282CacB7c907b592a3031cA94
+
+--- Initializing Governance ---
+Governance initialized
+
+========================================
+Deployment complete!
+========================================
+FhenixMarkets:     0x050262EDE0E6320B2A9AB463776D87cdAfD44572
+FhenixGovernance:  0x08e04595ACC18e4282CacB7c907b592a3031cA94
+Deployer:          0xd5C9B9a6E16112B8985280c07462E3b358C3844F
+========================================
+
+Add these to your frontend .env:
+VITE_MARKETS_CONTRACT=0x050262EDE0E6320B2A9AB463776D87cdAfD44572
+VITE_GOVERNANCE_CONTRACT=0x08e04595ACC18e4282CacB7c907b592a3031cA94

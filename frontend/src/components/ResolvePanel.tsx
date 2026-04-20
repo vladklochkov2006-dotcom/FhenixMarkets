@@ -10,6 +10,7 @@ import {
   Shield,
   Coins,
   Swords,
+  RefreshCw,
 } from 'lucide-react'
 import { useState, useEffect, useMemo } from 'react'
 import { type Market, useWalletStore } from '@/lib/store'
@@ -22,32 +23,29 @@ import {
   finalizeVotes as contractFinalizeVotes,
   confirmResolution as contractConfirmResolution,
   claimVoterBond as contractClaimVoterBond,
+  requestVoteDecryption as contractRequestVoteDecryption,
+  requestVoterDecryption as contractRequestVoterDecryption,
   parseContractError,
   ensureSepoliaNetwork,
   MARKET_STATUS,
   FEES,
+  FHENIX_MARKETS_ADDRESS,
+  type VoteTallyData,
 } from '@/lib/contracts'
 import { ethers } from 'ethers'
 import { TransactionLink } from './TransactionLink'
-import { FHENIX_MARKETS_ADDRESS } from '@/lib/contracts'
 
 // Local type stub for MarketResolutionData
-type MarketResolutionData = {
-  winning_outcome: number
-  challenge_deadline: bigint
-  finalized: boolean
-  total_bonded?: bigint
-  [key: string]: unknown
-}
+// Type is now imported from contracts.ts
+// MarketResolutionData removed in favor of VoteTallyData
 
 // getCurrentBlockHeight — on Ethereum, use provider to get latest block
-async function getCurrentBlockHeight(): Promise<bigint> {
+const getCurrentBlockHeight = async (): Promise<bigint> => {
   try {
     const provider = new ethers.BrowserProvider((window as any).ethereum)
-    const blockNumber = await provider.getBlockNumber()
-    return BigInt(blockNumber)
+    return BigInt(await provider.getBlockNumber())
   } catch {
-    return 0n
+    return BigInt(Math.floor(Date.now() / 1000))
   }
 }
 
@@ -58,15 +56,15 @@ function getProgramIdForToken(_tokenType: string = 'ETH'): string {
 
 interface ResolvePanelProps {
   market: Market
-  resolution: MarketResolutionData | null
-  onResolutionChange?: () => void
+  resolution: VoteTallyData | null
+  onResolutionChange: () => Promise<void>
 }
 
 type ResolveStep = 'close' | 'submit' | 'challenge' | 'finalize' | 'done'
 
 // v33 constants (must match contract)
-const MIN_RESOLUTION_BOND = 1_000_000n // 1 ETH
-const BOND_MULTIPLIER = 2n
+const MIN_VOTE_BOND = ethers.parseEther('0.001')
+const BOND_MULTIPLIER = 3n
 
 interface ParsedVoterBondReceipt {
   plaintext: string
@@ -95,7 +93,6 @@ async function inspectVoterBondReceiptsForMarket(
 ): Promise<MarketReceiptScanResult> {
   let matchedUnspent: ParsedVoterBondReceipt | null = null
   let matchedSpent: ParsedVoterBondReceipt | null = null
-  // On Ethereum/Fhenix, VoterBondReceipt data is read from the FhenixMarkets contract via ethers.js
   devLog(`${logPrefix} Ethereum mode: VoterBondReceipt lookup via contract (TODO)`)
 
   if (!matchedUnspent && !matchedSpent) {
@@ -110,7 +107,6 @@ async function inspectVoterBondReceiptsForMarket(
 
 export function ResolvePanel({ market, resolution, onResolutionChange }: ResolvePanelProps) {
   const { wallet } = useWalletStore()
-  // Contract calls via contracts.ts
 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [transactionId, setTransactionId] = useState<string | null>(null)
@@ -124,7 +120,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
   const numOutcomes = market.numOutcomes ?? 2
   const outcomeLabels = market.outcomeLabels ?? (numOutcomes === 2 ? ['Yes', 'No'] : Array.from({ length: numOutcomes }, (_, i) => `Outcome ${i + 1}`))
 
-  // Fetch current block height
   useEffect(() => {
     let mounted = true
     const fetchBlock = async () => {
@@ -140,55 +135,41 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     return () => { mounted = false; clearInterval(interval) }
   }, [])
 
-  // Determine current step (v34: Multi-Voter Quorum + Dispute)
-  // Status flow: ACTIVE(1) → CLOSED(2) → PENDING_RESOLUTION(5) → PENDING_FINALIZATION(6) → RESOLVED(3)
   const STATUS_PENDING_FINALIZATION = 6
   const currentStep: ResolveStep = useMemo(() => {
     if (market.status === MARKET_STATUS.RESOLVED) return 'done'
     if (market.status === STATUS_PENDING_FINALIZATION) {
-      // Dispute window — challenge_deadline is set to dispute_deadline when status=6
-      // (see getMarketResolution: challengeDeadline = disputeDeadline when PENDING_FINALIZATION)
-      if (resolution && currentBlock > 0n && resolution.challenge_deadline > 0n && currentBlock > resolution.challenge_deadline) {
-        return 'finalize' // Dispute window passed → confirm_resolution
+      if (resolution && currentBlock > 0n && resolution.disputeDeadline > 0n && currentBlock > resolution.disputeDeadline) {
+        return 'finalize'
       }
-      return 'challenge' // Within dispute window — can file dispute
+      return 'challenge'
     }
     if (market.status === 5 /* PENDING_RESOLUTION */) {
-      // Voting phase — check if voting window passed with enough voters
-      if (resolution && currentBlock > 0n && currentBlock > resolution.challenge_deadline) {
-        return 'finalize' // Voting window passed → finalize_votes
+      if (resolution && currentBlock > 0n && currentBlock > resolution.disputeDeadline) {
+        return 'finalize'
       }
-      return 'submit' // Still in voting window — can vote
+      return 'submit'
     }
     if (market.status === MARKET_STATUS.CLOSED) return 'submit'
-    return 'close' // ACTIVE but expired
+    return 'close'
   }, [market.status, resolution, currentBlock])
 
-  const canFinalize = resolution && currentBlock > resolution.challenge_deadline
-
-  // Resolution round info from on-chain data
   const roundInfo = useMemo(() => {
     if (!resolution) return null
     return {
-      round: (resolution.round as number) || 1,
-      proposer: (resolution.proposer as string) || (resolution.resolver as string) || 'unknown',
-      bondAmount: (resolution.bond_amount as bigint) || MIN_RESOLUTION_BOND,
-      totalBonded: resolution.total_bonded || MIN_RESOLUTION_BOND,
-      proposedOutcome: (resolution.proposed_outcome as number) || resolution.winning_outcome,
+      totalBonded: resolution.totalBonded,
     }
   }, [resolution])
 
-  // Minimum bond for challenge (2x current)
-  const minChallengeBond = roundInfo
-    ? BigInt(roundInfo.bondAmount) * BOND_MULTIPLIER
-    : MIN_RESOLUTION_BOND * BOND_MULTIPLIER
+  const minChallengeBond = resolution
+    ? resolution.totalBonded * BOND_MULTIPLIER
+    : MIN_VOTE_BOND * BOND_MULTIPLIER
 
-  // Challenge window countdown
   const challengeInfo = useMemo(() => {
     if (!resolution || currentBlock === 0n) return null
-    const blocksLeft = resolution.challenge_deadline - currentBlock
+    const blocksLeft = resolution.disputeDeadline - currentBlock
     if (blocksLeft <= 0n) return { text: 'Challenge window ended', canFinalize: true, blocksLeft: 0n }
-    const secondsLeft = Number(blocksLeft) // deadlines are timestamps (seconds)
+    const secondsLeft = Number(blocksLeft)
     const hours = Math.floor(secondsLeft / 3600)
     const minutes = Math.floor((secondsLeft % 3600) / 60)
     return {
@@ -217,53 +198,53 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
 
     setBondIndicator({ status: 'checking', receipt: null })
 
-    ;(async () => {
-      try {
-        const receipt = await inspectVoterBondReceiptsForMarket(
-          getProgramIdForToken('ETH'),
-          market.id,
-          '[BondStatus]',
-        )
+      ; (async () => {
+        try {
+          const receipt = await inspectVoterBondReceiptsForMarket(
+            getProgramIdForToken('ETH'),
+            market.id,
+            '[BondStatus]',
+          )
 
-        if (cancelled) return
+          if (cancelled) return
 
-        if (receipt.unspent?.votedOutcome === resolution.winning_outcome) {
-          setBondIndicator({ status: 'claimable', receipt: receipt.unspent })
-          return
-        }
+          if (receipt.unspent?.votedOutcome === resolution.winningOutcome) {
+            setBondIndicator({ status: 'claimable', receipt: receipt.unspent })
+            return
+          }
 
-        if (receipt.unspent) {
-          setBondIndicator({ status: 'slashed', receipt: receipt.unspent })
-          return
-        }
+          if (receipt.unspent) {
+            setBondIndicator({ status: 'slashed', receipt: receipt.unspent })
+            return
+          }
 
-        if (receipt.spent) {
+          if (receipt.spent) {
+            setBondIndicator({
+              status: 'claimed',
+              receipt: receipt.spent,
+              message: 'This bond receipt has already been spent in a successful claim.',
+            })
+            return
+          }
+
+          if (!receipt.unspent && !receipt.spent) {
+            setBondIndicator({
+              status: 'missing',
+              receipt: null,
+              message: 'This wallet does not have a VoterBondReceipt for this market.',
+            })
+            return
+          }
+        } catch (err) {
+          if (cancelled) return
+          console.error('[BondStatus] Failed to inspect voter bond receipt:', err)
           setBondIndicator({
-            status: 'claimed',
-            receipt: receipt.spent,
-            message: 'This bond receipt has already been spent in a successful claim.',
-          })
-          return
-        }
-
-        if (!receipt.unspent && !receipt.spent) {
-          setBondIndicator({
-            status: 'missing',
+            status: 'error',
             receipt: null,
-            message: 'This wallet does not have a VoterBondReceipt for this market.',
+            message: 'Bond status could not be checked automatically. Try reconnecting your wallet and refreshing the page.',
           })
-          return
         }
-      } catch (err) {
-        if (cancelled) return
-        console.error('[BondStatus] Failed to inspect voter bond receipt:', err)
-        setBondIndicator({
-          status: 'error',
-          receipt: null,
-          message: 'Bond status could not be checked automatically. Try reconnecting your wallet and refreshing the page.',
-        })
-      }
-    })()
+      })()
 
     return () => { cancelled = true }
   }, [
@@ -276,7 +257,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     wallet.address,
   ])
 
-  // Steps config
   const steps: { key: ResolveStep; label: string; icon: React.ElementType }[] = [
     { key: 'close', label: 'Close', icon: Lock },
     { key: 'submit', label: 'Submit', icon: Gavel },
@@ -310,7 +290,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
 
       await ensureSepoliaNetwork()
 
-      // Bond is sent as msg.value (minimum 0.001 ETH)
       const bondWei = FEES.MIN_VOTER_BOND
 
       const receipt = await contractVoteOutcome(market.id, selectedOutcome, bondWei)
@@ -334,7 +313,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
 
       await ensureSepoliaNetwork()
 
-      // Dispute bond = 3x total bonded (sent as msg.value)
       const bondWei = minChallengeBond
 
       const receipt = await contractDispute(market.id, selectedOutcome, bondWei)
@@ -353,10 +331,11 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     try {
       await ensureSepoliaNetwork()
 
-      // Determine which function to call based on market status
       let receipt
       if (market.status === STATUS_PENDING_FINALIZATION) {
         receipt = await contractConfirmResolution(market.id)
+      } else if (resolution && !resolution.decryptionRequested) {
+        receipt = await contractRequestVoteDecryption(market.id)
       } else {
         receipt = await contractFinalizeVotes(market.id)
       }
@@ -375,14 +354,24 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     setError(null)
     try {
       await ensureSepoliaNetwork()
-
-      // On Ethereum, claimVoterBond checks on-chain if the caller voted correctly
       const receipt = await contractClaimVoterBond(market.id)
       setTransactionId(receipt.hash)
       onResolutionChange?.()
     } catch (err: unknown) {
       devWarn('[ClaimBond] Error:', err)
-      setError(err instanceof Error ? parseContractError(err) : 'Failed to claim voter bond')
+      const msg = parseContractError(err)
+      if (msg.includes('Not decrypted')) {
+        setError('Voter choice not decrypted yet. Requesting decryption...')
+        try {
+          const r2 = await contractRequestVoterDecryption(market.id)
+          setTransactionId(r2.hash)
+          onResolutionChange?.()
+        } catch (e2) {
+          setError(parseContractError(e2))
+        }
+      } else {
+        setError(msg)
+      }
     } finally {
       setIsSubmitting(false)
     }
@@ -404,8 +393,8 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
   const votedOutcomeLabel = bondIndicator.receipt?.votedOutcome
     ? outcomeLabels[bondIndicator.receipt.votedOutcome - 1] || `Outcome ${bondIndicator.receipt.votedOutcome}`
     : null
-  const winningOutcomeLabel = resolution?.winning_outcome
-    ? outcomeLabels[resolution.winning_outcome - 1] || `Outcome ${resolution.winning_outcome}`
+  const winningOutcomeLabel = resolution?.winningOutcome
+    ? outcomeLabels[resolution.winningOutcome - 1] || `Outcome ${resolution.winningOutcome}`
     : null
   const claimButtonDisabled = isSubmitting
     || !wallet.address
@@ -415,7 +404,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
 
   return (
     <div className="glass-card overflow-hidden">
-      {/* Header */}
       <div className="p-6 border-b border-white/[0.04]">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-xl bg-brand-500/10 flex items-center justify-center">
@@ -423,11 +411,10 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
           </div>
           <div>
             <h3 className="text-lg font-semibold text-white">Open Resolution</h3>
-            <p className="text-sm text-surface-400">Anyone can resolve with bond</p>
+            <p className="text-sm text-brand-300">Market Resolved</p>
           </div>
         </div>
 
-        {/* Step Progress */}
         <div className="flex items-center gap-1">
           {steps.map((s, idx) => {
             const StepIcon = s.icon
@@ -441,8 +428,8 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                 <div className={cn(
                   'flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium flex-1',
                   isComplete ? 'bg-yes-500/10 text-yes-400' :
-                  isCurrent ? 'bg-brand-500/10 text-brand-400 ring-1 ring-brand-500/30' :
-                  'bg-white/[0.02] text-surface-500'
+                    isCurrent ? 'bg-brand-500/10 text-brand-400 ring-1 ring-brand-500/30' :
+                      'bg-white/[0.02] text-surface-500'
                 )}>
                   <StepIcon className="w-3.5 h-3.5 flex-shrink-0" />
                   <span className="truncate">{s.label}</span>
@@ -459,9 +446,7 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
         </div>
       </div>
 
-      {/* Content */}
       <div className="p-6">
-        {/* Transaction success */}
         {transactionId ? (
           <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="text-center">
             <div className="w-16 h-16 rounded-full bg-yes-500/20 mx-auto mb-4 flex items-center justify-center">
@@ -473,7 +458,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
             <button onClick={resetState} className="btn-secondary w-full mt-4">Continue</button>
           </motion.div>
         ) : currentStep === 'done' ? (
-          /* Fully resolved — show claim voter bond */
           <div className="space-y-4">
             <div className="text-center py-4">
               <div className="w-14 h-14 rounded-full bg-yes-500/10 flex items-center justify-center mx-auto mb-3">
@@ -483,13 +467,12 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
               {resolution && (
                 <p className="text-surface-400 text-sm">
                   Winning outcome: <span className="text-white font-medium">
-                    {outcomeLabels[resolution.winning_outcome - 1] || `Outcome ${resolution.winning_outcome}`}
+                    {outcomeLabels[resolution.winningOutcome - 1] || `Outcome ${resolution.winningOutcome}`}
                   </span>
                 </p>
               )}
             </div>
 
-            {/* Claim Voter Bond */}
             <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04] space-y-3">
               <div className="flex items-center gap-2">
                 <Coins className="w-4 h-4 text-brand-400" />
@@ -572,12 +555,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
               )}
               {roundInfo && (
                 <div className="flex justify-between text-xs text-surface-500">
-                  <span>Total Voters</span>
-                  <span className="text-white">{roundInfo.round}</span>
-                </div>
-              )}
-              {roundInfo && (
-                <div className="flex justify-between text-xs text-surface-500">
                   <span>Total Bonded</span>
                   <span className="text-white font-mono">{Number(roundInfo.totalBonded) / 1e18} ETH</span>
                 </div>
@@ -612,13 +589,12 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
           </div>
         ) : (
           <>
-            {/* Step 1: Close Market */}
             {currentStep === 'close' && (
               <div className="space-y-4">
                 <div className="flex items-start gap-3 p-4 rounded-xl bg-white/[0.02]">
                   <Lock className="w-5 h-5 text-brand-400 mt-0.5 flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-white">Close Trading</p>
+                    <p className="text-lg font-bold text-white uppercase tracking-tight">VOTING PHASE</p>
                     <p className="text-xs text-surface-400 mt-1">
                       Stops all trading. Anyone can call this after the deadline.
                     </p>
@@ -640,19 +616,13 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
               </div>
             )}
 
-            {/* Step 2: Submit Outcome (Open Voting + Bond) */}
             {currentStep === 'submit' && (
               <div className="space-y-4">
-                {/* Show voting status if votes already exist */}
                 {roundInfo && roundInfo.totalBonded > 0n && (
                   <div className="p-4 rounded-xl bg-white/[0.02] space-y-2">
                     <div className="flex items-center gap-2 mb-2">
                       <Gavel className="w-4 h-4 text-brand-400" />
                       <span className="text-sm font-medium text-white">Voting in Progress</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-surface-400">Total Voters</span>
-                      <span className="text-white font-medium">{roundInfo.round} / 3 minimum</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Bonded</span>
@@ -664,14 +634,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                         <span className={cn('font-medium', challengeInfo.canFinalize ? 'text-yes-400' : 'text-brand-400')}>
                           {challengeInfo.text}
                         </span>
-                      </div>
-                    )}
-                    {roundInfo.round >= 3 && challengeInfo && !challengeInfo.canFinalize && (
-                      <div className="flex items-start gap-2 p-3 mt-2 rounded-lg bg-yes-500/5 border border-yes-500/20">
-                        <CheckCircle2 className="w-4 h-4 text-yes-400 flex-shrink-0 mt-0.5" />
-                        <p className="text-xs text-yes-300">
-                          Quorum reached (3+ voters). After voting deadline passes, anyone can call Finalize.
-                        </p>
                       </div>
                     )}
                   </div>
@@ -695,7 +657,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                   </p>
                 </div>
 
-                {/* Outcome selection */}
                 <div>
                   <label className="block text-sm text-surface-400 mb-2">Select Winning Outcome</label>
                   <div className="space-y-2">
@@ -724,25 +685,20 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
               </div>
             )}
 
-            {/* Step 3: Dispute Window (status 6 = PENDING_FINALIZATION) */}
             {currentStep === 'challenge' && (
               <div className="space-y-4">
-                {/* Finalized vote result */}
                 {roundInfo && (
                   <div className="p-4 rounded-xl bg-white/[0.02] space-y-3">
                     <div className="flex items-center gap-2 mb-2">
                       <Shield className="w-4 h-4 text-purple-400" />
-                      <span className="text-sm font-medium text-white">Dispute Window — Vote Result Pending Confirmation</span>
+                      <p className="text-lg font-bold text-white uppercase tracking-tight">CHALLENGE WINDOW</p>
                     </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-surface-400">Winning Outcome</span>
-                      <span className="text-yes-400 font-medium">
-                        {outcomeLabels[roundInfo.proposedOutcome - 1] || `Outcome ${roundInfo.proposedOutcome}`}
-                      </span>
-                    </div>
+                    <p className="text-sm text-surface-400">
+                      The community has 24 hours to challenge the outcome.
+                    </p>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Voters</span>
-                      <span className="text-white font-medium">{roundInfo.round}</span>
+                      <span className="text-surface-500 font-mono text-xs">Waiting for Confirmation</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Bonded</span>
@@ -757,7 +713,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                   </div>
                 )}
 
-                {/* Agree — wait for confirm */}
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-yes-500/5 border border-yes-500/20">
                   <CheckCircle2 className="w-4 h-4 text-yes-400 flex-shrink-0 mt-0.5" />
                   <p className="text-xs text-yes-300">
@@ -765,14 +720,13 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                   </p>
                 </div>
 
-                {/* Disagree — dispute */}
                 <div className="border-t border-white/[0.04] pt-4">
                   <div className="flex items-start gap-3 p-4 rounded-xl bg-no-500/5 border border-no-500/20 mb-4">
                     <Swords className="w-5 h-5 text-no-400 mt-0.5 flex-shrink-0" />
                     <div>
                       <p className="text-sm font-medium text-no-300">Disagree? File a Dispute!</p>
                       <p className="text-xs text-surface-400 mt-1">
-                        Override the vote result with <span className="text-white font-medium">{Number(BigInt(roundInfo?.totalBonded || 0) * 3n) / 1e18} ETH bond</span> (3× total bonded).
+                        Override the vote result with <span className="text-white font-medium">{Number(BigInt(roundInfo?.totalBonded || 0) * BOND_MULTIPLIER) / 1e18} ETH bond</span>.
                         If your outcome is correct, you get your bond back + all voter bonds. If wrong, you lose your entire bond.
                       </p>
                     </div>
@@ -783,8 +737,6 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                     <div className="space-y-2">
                       {outcomeLabels.map((label, i) => {
                         const outcomeNum = i + 1
-                        // Cannot select same outcome as winning
-                        if (roundInfo && outcomeNum === roundInfo.proposedOutcome) return null
                         const isSelected = selectedOutcome === outcomeNum
                         const colorIdx = Math.min(i, 3)
                         return (
@@ -803,36 +755,35 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
 
                   <button onClick={handleChallengeOutcome} disabled={isSubmitting || !selectedOutcome}
                     className={cn('w-full flex items-center justify-center gap-2 mt-4', 'bg-no-500/20 hover:bg-no-500/30 text-no-300 font-medium py-3 rounded-xl transition-colors', !selectedOutcome && 'opacity-50 cursor-not-allowed')}>
-                    {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Confirm in Wallet...</span></> : <><Swords className="w-5 h-5" /><span>{selectedOutcome ? `Dispute: ${outcomeLabels[selectedOutcome - 1]} (${Number(BigInt(roundInfo?.totalBonded || 0) * 3n) / 1e18} ETH)` : 'Select Outcome to Dispute'}</span></>}
+                    {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Confirm in Wallet...</span></> : <><Swords className="w-5 h-5" /><span>{selectedOutcome ? `Dispute: ${outcomeLabels[selectedOutcome - 1]} (${Number(BigInt(roundInfo?.totalBonded || 0) * BOND_MULTIPLIER) / 1e18} ETH)` : 'Select Outcome to Dispute'}</span></>}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Step 4: Finalize */}
             {currentStep === 'finalize' && (
               <div className="space-y-4">
                 <div className="flex items-start gap-3 p-4 rounded-xl bg-white/[0.02]">
                   <CheckCircle2 className="w-5 h-5 text-purple-400 mt-0.5 flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-white">Finalize Resolution</p>
+                    <p className="text-xl font-bold text-white">Current Resolution</p>
                     <p className="text-xs text-surface-400 mt-1">
                       Challenge window ended. Anyone can finalize. The resolver earns 20% of protocol fees as reward.
                     </p>
                   </div>
                 </div>
 
-                {roundInfo && (
+                {roundInfo && resolution && (
                   <div className="p-4 rounded-xl bg-yes-500/5 border border-yes-500/20 space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Final Outcome</span>
                       <span className="text-yes-400 font-medium">
-                        {outcomeLabels[roundInfo.proposedOutcome - 1] || `Outcome ${roundInfo.proposedOutcome}`}
+                        {outcomeLabels[resolution.winningOutcome - 1] || `Outcome ${resolution.winningOutcome}`}
                       </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Resolution Rounds</span>
-                      <span className="text-white">{roundInfo.round}</span>
+                      <span className="text-white">N/A</span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-surface-400">Total Bonded</span>
@@ -841,24 +792,28 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
                   </div>
                 )}
 
-                <button onClick={handleFinalizeOutcome} disabled={isSubmitting || !canFinalize}
-                  className={cn('w-full flex items-center justify-center gap-2 btn-primary', !canFinalize && 'opacity-50 cursor-not-allowed')}>
-                  {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Confirm in Wallet...</span></> : <><CheckCircle2 className="w-5 h-5" /><span>Finalize Resolution</span></>}
+                <button onClick={handleFinalizeOutcome} disabled={isSubmitting || (resolution?.decryptionRequested && resolution?.winningOutcome === 0)}
+                  className={cn('w-full flex items-center justify-center gap-2 btn-primary',
+                    (resolution?.decryptionRequested && resolution?.winningOutcome === 0) && 'opacity-60 cursor-wait')}>
+                  {isSubmitting ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Confirming...</span></> :
+                    (resolution && !resolution.decryptionRequested) ? <><RefreshCw className="w-5 h-5" /><span>Request Vote Decryption</span></> :
+                      (resolution && resolution.decryptionRequested && resolution.winningOutcome === 0) ? <><Loader2 className="w-5 h-5 animate-spin" /><span>Decrypting (waiting for coprocessor)...</span></> :
+                        <><CheckCircle2 className="w-5 h-5" /><span>Finalize Resolution</span></>}
                 </button>
               </div>
             )}
-
-            {/* Error */}
-            {error && (
-              <div className="flex items-start gap-3 p-4 rounded-xl bg-no-500/10 border border-no-500/20 mt-4">
-                <AlertCircle className="w-5 h-5 text-no-400 flex-shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-no-400">Action Failed</p>
-                  <p className="text-sm text-surface-400 mt-1">{error}</p>
-                </div>
-              </div>
-            )}
           </>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-no-500/10 border border-no-500/20 mt-4">
+            <AlertCircle className="w-5 h-5 text-no-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-no-400">Action Failed</p>
+              <p className="text-sm text-surface-400 mt-1">{error}</p>
+            </div>
+          </div>
         )}
       </div>
     </div>

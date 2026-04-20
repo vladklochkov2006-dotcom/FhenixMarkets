@@ -8,18 +8,16 @@ import {
   parseContractError,
   ensureSepoliaNetwork,
   MARKET_STATUS,
+  type MarketFees,
 } from '@/lib/contracts'
 import { TransactionLink } from './TransactionLink'
 
 // Compatibility type for fees prop
-interface MarketFeesData {
-  creator_fees: bigint
-  protocol_fees: bigint
-}
+// interface MarketFeesData removed in favor of MarketFees from contracts.ts
 
 interface CreatorFeesPanelProps {
   market: Market
-  fees: MarketFeesData
+  fees: MarketFees
 }
 
 export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
@@ -39,7 +37,7 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
   const winnerClaimTimeRemaining: string | null = null
 
   // Creator can withdraw fees only after market is resolved and finalized
-  const canWithdraw = isCreator && isResolved && fees.creator_fees > 0n
+  const canWithdraw = isCreator && isResolved && fees.creatorFees > 0n
 
   const handleWithdraw = async () => {
     if (!canWithdraw) return
@@ -82,13 +80,13 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
           <div className="p-4 rounded-xl bg-white/[0.02]">
             <p className="text-xs text-surface-500 uppercase tracking-wide mb-1">Creator Fees</p>
             <p className="text-xl font-bold text-white">
-              {formatCredits(fees.creator_fees)} {tokenSymbol}
+              {formatCredits(fees.creatorFees)} {tokenSymbol}
             </p>
           </div>
           <div className="p-4 rounded-xl bg-white/[0.02]">
             <p className="text-xs text-surface-500 uppercase tracking-wide mb-1">Protocol Fees</p>
             <p className="text-xl font-bold text-surface-300">
-              {formatCredits(fees.protocol_fees)} {tokenSymbol}
+              {formatCredits(fees.protocolFees)} {tokenSymbol}
             </p>
           </div>
         </div>
@@ -141,7 +139,7 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
             </div>
             <h4 className="text-lg font-semibold text-white mb-2">Fees Withdrawn</h4>
             <p className="text-sm text-surface-400 mb-4">
-              {formatCredits(fees.creator_fees)} {tokenSymbol} has been sent to your wallet.
+              {formatCredits(fees.creatorFees)} {tokenSymbol} has been sent to your wallet.
             </p>
             <TransactionLink
               transactionId={transactionId}
@@ -172,7 +170,7 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
               </div>
             )}
 
-            {isCreator && isResolved && fees.creator_fees > 0n && winnerClaimWindowActive && (
+            {isCreator && isResolved && fees.creatorFees > 0n && winnerClaimWindowActive && (
               <div className="flex items-start gap-3 p-4 rounded-xl bg-brand-500/5 border border-brand-500/20">
                 <AlertCircle className="w-5 h-5 text-brand-400 mt-0.5 flex-shrink-0" />
                 <div>
@@ -187,7 +185,7 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
               </div>
             )}
 
-            {isCreator && isResolved && fees.creator_fees === 0n && (
+            {isCreator && isResolved && fees.creatorFees === 0n && (
               <div className="p-4 rounded-xl bg-white/[0.02] text-center">
                 <p className="text-surface-400 text-sm">
                   No creator fees have been accumulated for this market.
@@ -223,8 +221,8 @@ export function CreatorFeesPanel({ market, fees }: CreatorFeesPanelProps) {
                   <span>
                     {winnerClaimWindowActive
                       ? 'Winner Claim Window Active'
-                      : `Withdraw ${fees.creator_fees > 0n
-                        ? `${formatCredits(fees.creator_fees)} ${tokenSymbol}`
+                      : `Withdraw ${fees.creatorFees > 0n
+                        ? `${formatCredits(fees.creatorFees)} ${tokenSymbol}`
                         : 'Fees'
                       }`}
                   </span>

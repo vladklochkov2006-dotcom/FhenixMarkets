@@ -17,8 +17,8 @@ import { devLog, devWarn } from './logger'
 // ADDRESSES & CHAIN
 // ============================================================================
 
-export const FHENIX_MARKETS_ADDRESS = '0x3B054d0edB8C27020AE370831B360a02DC6DFe8C'
-export const FHENIX_GOVERNANCE_ADDRESS = '0x3b8f86f9357eE73a20C385ce481983a0efC5D099'
+export const FHENIX_MARKETS_ADDRESS = '0x050262EDE0E6320B2A9AB463776D87cdAfD44572'
+export const FHENIX_GOVERNANCE_ADDRESS = '0x08e04595ACC18e4282CacB7c907b592a3031cA94'
 export const SEPOLIA_CHAIN_ID = 11155111
 export const SEPOLIA_RPC_URL = 'https://ethereum-sepolia.publicnode.com'
 
@@ -104,6 +104,24 @@ export async function getProvider(): Promise<BrowserProvider> {
   return await getProviderFn()
 }
 
+/** Ensure cofhejs is initialized for encryption */
+import { cofhejs, Encryptable } from 'cofhejs/web'
+
+let _cofheInitialized = false
+export async function ensureCofheInitialized(): Promise<void> {
+  if (_cofheInitialized) return
+  const provider = await getProvider()
+  const signer = await getSigner()
+  const res = await cofhejs.initializeWithEthers({
+    ethersProvider: provider,
+    ethersSigner: signer,
+  })
+  if (!res.success) {
+    throw new Error(`Failed to initialize cofhejs: ${res.error?.message}`)
+  }
+  _cofheInitialized = true
+}
+
 // ============================================================================
 // CONTRACT INSTANCES
 // ============================================================================
@@ -160,6 +178,7 @@ export interface VoteTallyData {
   totalBonded: bigint     // uint128
   totalVoters: number     // uint8
   finalized: boolean
+  decryptionRequested: boolean
 }
 
 export interface PriceData {
@@ -232,7 +251,7 @@ export async function fetchPrices(marketId: string): Promise<number[]> {
 export async function fetchVoteTally(marketId: string): Promise<VoteTallyData | null> {
   try {
     const c = getMarketsRead()
-    const v = await c.getVoteTally(marketId)
+    const v = await c.voteTallies(marketId)
     return {
       winningOutcome: Number(v.winningOutcome),
       votingDeadline: BigInt(v.votingDeadline),
@@ -240,9 +259,24 @@ export async function fetchVoteTally(marketId: string): Promise<VoteTallyData | 
       totalBonded: BigInt(v.totalBonded),
       totalVoters: Number(v.totalVoters),
       finalized: v.finalized,
+      decryptionRequested: v.decryptionRequested,
     }
   } catch (err) {
     devWarn('[contracts] fetchVoteTally failed:', err)
+    return null
+  }
+}
+
+export async function fetchMarketFees(marketId: string): Promise<MarketFees | null> {
+  try {
+    const c = getMarketsRead()
+    const f = await c.marketFees(marketId)
+    return {
+      protocolFees: BigInt(f.protocolFees),
+      creatorFees: BigInt(f.creatorFees),
+    }
+  } catch (err) {
+    devWarn('[contracts] fetchMarketFees failed:', err)
     return null
   }
 }
@@ -411,11 +445,20 @@ export async function buyShares(
   marketId: string,
   outcome: number,
   minSharesOut: bigint,
-  amountWei: bigint,
+  amount: bigint,
 ): Promise<ethers.TransactionReceipt> {
-  devLog('[contracts] buyShares', { marketId, outcome, amountWei: amountWei.toString() })
-  const c = await getMarketsWrite()
-  const tx = await c.buyShares(marketId, outcome, minSharesOut, { value: amountWei })
+  devLog('[contracts] buyShares', { marketId, outcome, amount: amount.toString() })
+
+  await ensureCofheInitialized()
+  const encRes = await cofhejs.encrypt([Encryptable.uint8(BigInt(outcome))])
+  if (!encRes.success) {
+    throw new Error(`Encryption failed: ${encRes.error?.message}`)
+  }
+  const encryptedOutcome = encRes.data[0]
+
+  const signer = await getSigner()
+  const contract = new Contract(FHENIX_MARKETS_ADDRESS, FhenixMarketsABI, signer)
+  const tx = await contract.buyShares(marketId, outcome, encryptedOutcome, minSharesOut, { value: amount })
   return await waitForReceipt(tx)
 }
 
@@ -468,11 +511,27 @@ export async function cancelMarket(marketId: string): Promise<ethers.Transaction
 export async function voteOutcome(
   marketId: string,
   outcome: number,
-  bondWei: bigint,
+  bondAmount: bigint,
 ): Promise<ethers.TransactionReceipt> {
-  devLog('[contracts] voteOutcome', { marketId, outcome, bondWei: bondWei.toString() })
+  devLog('[contracts] voteOutcome', { marketId, outcome, bondAmount: bondAmount.toString() })
+
+  await ensureCofheInitialized()
+  const encRes = await cofhejs.encrypt([Encryptable.uint8(BigInt(outcome))])
+  if (!encRes.success) {
+    throw new Error(`Encryption failed: ${encRes.error?.message}`)
+  }
+  const encryptedOutcome = encRes.data[0]
+
+  const signer = await getSigner()
+  const contract = new Contract(FHENIX_MARKETS_ADDRESS, FhenixMarketsABI, signer)
+  const tx = await contract.voteOutcome(marketId, outcome, encryptedOutcome, { value: bondAmount })
+  return await waitForReceipt(tx)
+}
+
+export async function requestVoteDecryption(marketId: string): Promise<ethers.TransactionReceipt> {
+  devLog('[contracts] requestVoteDecryption', { marketId })
   const c = await getMarketsWrite()
-  const tx = await c.voteOutcome(marketId, outcome, { value: bondWei })
+  const tx = await c.requestVoteDecryption(marketId)
   return await waitForReceipt(tx)
 }
 
@@ -480,6 +539,13 @@ export async function finalizeVotes(marketId: string): Promise<ethers.Transactio
   devLog('[contracts] finalizeVotes', { marketId })
   const c = await getMarketsWrite()
   const tx = await c.finalizeVotes(marketId)
+  return await waitForReceipt(tx)
+}
+
+export async function requestVoterDecryption(marketId: string): Promise<ethers.TransactionReceipt> {
+  devLog('[contracts] requestVoterDecryption', { marketId })
+  const c = await getMarketsWrite()
+  const tx = await c.requestVoterDecryption(marketId)
   return await waitForReceipt(tx)
 }
 

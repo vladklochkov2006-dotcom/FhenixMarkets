@@ -1,0 +1,8 @@
+﻿src/components/ResolvePanel.tsx(32,3): error TS6133: 'fetchVoteTally' is declared but its value is never read.
+src/components/ResolvePanel.tsx(33,3): error TS2305: Module '"@/lib/contracts"' has no exported member 'fetchVoterInfo'.
+src/components/ResolvePanel.tsx(33,3): error TS6133: 'fetchVoterInfo' is declared but its value is never read.
+src/components/ResolvePanel.tsx(801,74): error TS2304: Cannot find name 'RefreshCw'.
+src/lib/wallet.ts(8,1): error TS6192: All imports in import declaration are unused.
+src/pages/MarketDetail.tsx(60,7): error TS6133: 'getProgramIdForToken' is declared but its value is never read.
+src/pages/MarketDetail.tsx(392,9): error TS2451: Cannot redeclare block-scoped variable 'refreshExtras'.
+src/pages/MarketDetail.tsx(767,9): error TS2451: Cannot redeclare block-scoped variable 'refreshExtras'.

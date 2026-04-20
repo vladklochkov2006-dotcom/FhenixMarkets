@@ -1,1 +1,10 @@
-﻿
+[1m[31mParserError:[39m[22m Expected ')' but got ';'
+   --> contracts/FhenixMarkets.sol:241:55:
+    |
+241 |         if (!(markets[marketId].creator != address(0));
+    |                                                       ^
+
+
+[31m[1mError[22m[39m [31m[1mHH600:[22m[39m Compilation failed
+
+For more info go to https://v2.hardhat.org/HH600 or run Hardhat with --show-stack-traces

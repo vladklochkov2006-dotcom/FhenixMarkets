@@ -14,8 +14,8 @@ pragma solidity ^0.8.20;
 // Uses @fhenixprotocol/cofhe-contracts (CoFHE coprocessor on Sepolia).
 // ============================================================================
 
-import {FHE, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
-import {ITaskManager} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
+import {FHE, euint8, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {ITaskManager, InEuint8} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract FhenixMarkets is ReentrancyGuard {
@@ -84,23 +84,26 @@ contract FhenixMarkets is ReentrancyGuard {
         uint128 creatorFees;
     }
 
+
+
+    struct VoterInfo {
+        euint8  encVotedOutcome;  // Optional FHE-encrypted vote choice
+        uint128 bondAmount;
+        bool    claimed;
+    }
+
     struct VoteTally {
-        uint128 outcome1Bonds;
-        uint128 outcome2Bonds;
-        uint128 outcome3Bonds;
-        uint128 outcome4Bonds;
-        uint8   totalVoters;
+        euint128 encOutcome1Bonds;
+        euint128 encOutcome2Bonds;
+        euint128 encOutcome3Bonds;
+        euint128 encOutcome4Bonds;
+        uint128 totalVoters;
         uint128 totalBonded;
         uint64  votingDeadline;
         uint64  disputeDeadline;
         bool    finalized;
         uint8   winningOutcome;
-    }
-
-    struct VoterInfo {
-        uint8   votedOutcome;
-        uint128 bondAmount;
-        bool    claimed;
+        bool    decryptionRequested;
     }
 
     // ========================================================================
@@ -216,24 +219,21 @@ contract FhenixMarkets is ReentrancyGuard {
     event MarketClosed(bytes32 indexed marketId);
     event MarketCancelled(bytes32 indexed marketId);
 
-    event VoteSubmitted(
-        bytes32 indexed marketId,
-        address indexed voter
-    );
-
+    event VoteSubmitted(bytes32 indexed marketId, address indexed voter);
     event VotesFinalized(bytes32 indexed marketId, uint8 winningOutcome);
     event ResolutionConfirmed(bytes32 indexed marketId, uint8 winningOutcome);
     event ResolutionDisputed(bytes32 indexed marketId, address disputer, uint8 proposedOutcome);
-
     event SharesRedeemed(bytes32 indexed marketId, address indexed redeemer);
     event RefundClaimed(bytes32 indexed marketId, address indexed claimer);
+
+
 
     // ========================================================================
     // MODIFIERS
     // ========================================================================
 
     modifier onlyDeployer() {
-        require(msg.sender == deployer, "Only deployer");
+        require(msg.sender == deployer);
         _;
     }
 
@@ -301,8 +301,8 @@ contract FhenixMarkets is ReentrancyGuard {
         address resolver
     ) external payable returns (bytes32) {
         require(numOutcomes >= 2 && numOutcomes <= 4);
-        require(msg.value >= MIN_LIQUIDITY, "Min liquidity");
-        require(deadline > block.timestamp, "Deadline in future");
+        require(msg.value >= MIN_LIQUIDITY);
+        require(deadline > block.timestamp);
         require(resolutionDeadline > deadline);
 
         uint128 initialLiquidity = uint128(msg.value);
@@ -371,7 +371,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function requestUnshieldShares(bytes32 marketId, uint8 outcome, uint128 amount) external marketExists(marketId) returns (uint256) {
         require(outcome >= 1 && outcome <= markets[marketId].numOutcomes);
-        require(amount > 0, "Zero amount");
+        require(amount > 0);
 
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
         euint128 encAmount = FHE.asEuint128(uint256(amount));
@@ -400,7 +400,7 @@ contract FhenixMarkets is ReentrancyGuard {
     }
 
     function requestUnshieldLP(bytes32 marketId, uint128 amount) external marketExists(marketId) returns (uint256) {
-        require(amount > 0, "Zero amount");
+        require(amount > 0);
 
         bytes32 key = _lpKey(marketId, msg.sender);
         euint128 encAmount = FHE.asEuint128(uint256(amount));
@@ -430,12 +430,12 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function executeUnshield(uint256 reqId) external {
         UnshieldRequest storage req = unshieldRequests[reqId];
-        require(req.user != address(0), "Not found");
-        require(!req.executed, "Already executed");
+        require(req.user != address(0));
+        require(!req.executed);
 
         ebool isSufficient = encUnshieldStatus[reqId];
         (bool success, bool decrypted) = FHE.getDecryptResultSafe(isSufficient);
-        require(decrypted, "Decryption pending");
+        require(decrypted);
 
         req.executed = true;
 
@@ -461,15 +461,17 @@ contract FhenixMarkets is ReentrancyGuard {
     function buyShares(
         bytes32 marketId,
         uint8   outcome,
+        InEuint8 calldata encOutcome,
         uint128 minSharesOut
-    ) external payable marketExists(marketId) {
+    ) external payable nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_ACTIVE, "Not active");
-        require(block.timestamp <= market.deadline, "Expired");
-        require(outcome >= 1 && outcome <= market.numOutcomes, "Invalid outcome");
+        require(market.status == MARKET_STATUS_ACTIVE);
+        require(block.timestamp <= market.deadline);
+        uint8 n = market.numOutcomes;
+        require(outcome >= 1 && outcome <= n);
 
         uint128 amountIn = uint128(msg.value);
-        require(amountIn >= MIN_TRADE_AMOUNT, "Below minimum");
+        require(amountIn >= MIN_TRADE_AMOUNT);
 
         // Calculate fees
         uint128 protocolFee = (amountIn * PROTOCOL_FEE_BPS) / FEE_DENOMINATOR;
@@ -482,13 +484,12 @@ contract FhenixMarkets is ReentrancyGuard {
         fees.creatorFees  += creatorFee;
         protocolTreasury  += protocolFee;
 
-        // FPMM calculation (public math on public reserves)
+        // FPMM calculation — compute shares for all possible outcomes (public math)
         AMMPool storage pool = ammPools[marketId];
-        uint8 n = market.numOutcomes;
         uint128 sharesOut = _calculateSharesOut(pool, outcome, n, amountToPool);
 
-        require(sharesOut >= minSharesOut, "Slippage");
-        require(sharesOut > 0, "Zero shares");
+        require(sharesOut >= minSharesOut);
+        require(sharesOut > 0);
 
         // Update reserves (public)
         _updateReservesAfterBuy(pool, outcome, n, amountToPool, sharesOut);
@@ -502,9 +503,14 @@ contract FhenixMarkets is ReentrancyGuard {
         bytes32 oKey = _outcomeShareKey(marketId, outcome);
         totalSharesIssued[oKey] += sharesOut;
 
-        // ---- FHE: Add shares to encrypted balance (PRIVATE) ----
-        bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        encShareBalances[key] = _fheAdd(encShareBalances[key], sharesOut);
+        // ---- FHE: Credit shares using encrypted outcome (PRIVATE balance assignment) ----
+        euint8 eOutcome = FHE.asEuint8(encOutcome);
+        FHE.allowThis(eOutcome);
+
+        euint128 eShares = FHE.asEuint128(uint256(sharesOut));
+        FHE.allowThis(eShares);
+
+        _creditSecretShares(marketId, msg.sender, eOutcome, eShares, n);
 
         emit SharesBought(marketId, msg.sender);
     }
@@ -526,10 +532,10 @@ contract FhenixMarkets is ReentrancyGuard {
         uint128 minTokensOut
     ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_ACTIVE, "Not active");
-        require(block.timestamp <= market.deadline, "Expired");
-        require(outcome >= 1 && outcome <= market.numOutcomes, "Invalid outcome");
-        require(sharesToSell > 0, "Zero shares");
+        require(market.status == MARKET_STATUS_ACTIVE);
+        require(block.timestamp <= market.deadline);
+        require(outcome >= 1 && outcome <= market.numOutcomes);
+        require(sharesToSell > 0);
 
         // FPMM reverse calculation: how many tokens for sharesToSell
         AMMPool storage pool = ammPools[marketId];
@@ -542,7 +548,7 @@ contract FhenixMarkets is ReentrancyGuard {
         uint128 lpFee       = (tokensGross * LP_FEE_BPS) / FEE_DENOMINATOR;
         uint128 netTokens   = tokensGross - protocolFee - creatorFee - lpFee;
 
-        require(netTokens >= minTokensOut, "Slippage");
+        require(netTokens >= minTokensOut);
 
         // Accumulate fees
         MarketFees storage fees = marketFees[marketId];
@@ -567,7 +573,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
         // Transfer ETH to seller
         (bool sent, ) = payable(msg.sender).call{value: netTokens}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
 
         emit SharesSold(marketId, msg.sender);
     }
@@ -578,11 +584,11 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function addLiquidity(bytes32 marketId) external payable marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_ACTIVE, "Not active");
-        require(block.timestamp <= market.deadline, "Expired");
+        require(market.status == MARKET_STATUS_ACTIVE);
+        require(block.timestamp <= market.deadline);
 
         uint128 amount = uint128(msg.value);
-        require(amount >= MIN_LIQUIDITY, "Min liquidity");
+        require(amount >= MIN_LIQUIDITY);
 
         AMMPool storage pool = ammPools[marketId];
 
@@ -594,7 +600,7 @@ contract FhenixMarkets is ReentrancyGuard {
             lpShares = (amount * pool.totalLPShares) / pool.totalLiquidity;
         }
 
-        require(lpShares > 0, "Zero LP shares");
+        require(lpShares > 0);
 
         // Update reserves proportionally
         uint8 n = market.numOutcomes;
@@ -643,14 +649,14 @@ contract FhenixMarkets is ReentrancyGuard {
             "Priority window"
         );
 
-        require(lpSharesToWithdraw > 0, "Zero shares");
+        require(lpSharesToWithdraw > 0);
 
         // Calculate proportional payout
         AMMPool storage pool = ammPools[marketId];
         uint128 tokensOut = (lpSharesToWithdraw * pool.totalLiquidity) / pool.totalLPShares;
 
-        require(tokensOut > 0, "Zero payout");
-        require(tokensOut <= marketCredits[marketId], "Insufficient funds");
+        require(tokensOut > 0);
+        require(tokensOut <= marketCredits[marketId]);
 
         // Update pool
         pool.totalLPShares  -= lpSharesToWithdraw;
@@ -663,7 +669,7 @@ contract FhenixMarkets is ReentrancyGuard {
         publicLPBalances[key] -= lpSharesToWithdraw;
 
         (bool sent, ) = payable(msg.sender).call{value: tokensOut}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
 
         emit LiquidityWithdrawn(marketId, msg.sender);
     }
@@ -678,22 +684,23 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function closeMarket(bytes32 marketId) external marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_ACTIVE, "Not active");
-        require(block.timestamp > market.deadline, "Not past deadline");
+        require(market.status == MARKET_STATUS_ACTIVE);
+        require(block.timestamp > market.deadline);
 
         market.status = STATUS_PENDING_RESOLUTION;
 
         voteTallies[marketId] = VoteTally({
-            outcome1Bonds: 0,
-            outcome2Bonds: 0,
-            outcome3Bonds: 0,
-            outcome4Bonds: 0,
+            encOutcome1Bonds: FHE.asEuint128(0),
+            encOutcome2Bonds: FHE.asEuint128(0),
+            encOutcome3Bonds: FHE.asEuint128(0),
+            encOutcome4Bonds: FHE.asEuint128(0),
             totalVoters: 0,
             totalBonded: 0,
             votingDeadline: uint64(block.timestamp) + VOTE_WINDOW,
             disputeDeadline: 0,
             finalized: false,
-            winningOutcome: 0
+            winningOutcome: 0,
+            decryptionRequested: false
         });
 
         emit MarketClosed(marketId);
@@ -729,7 +736,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function voteOutcome(
         bytes32 marketId,
-        uint8   outcome
+        InEuint8 calldata encOutcome
     ) external payable marketExists(marketId) {
         Market storage market = markets[marketId];
         require(
@@ -739,28 +746,29 @@ contract FhenixMarkets is ReentrancyGuard {
         );
 
         VoteTally storage tally = voteTallies[marketId];
-        require(block.timestamp <= tally.votingDeadline, "Voting closed");
-        require(outcome >= 1 && outcome <= market.numOutcomes, "Invalid outcome");
+        require(block.timestamp <= tally.votingDeadline);
 
         uint128 bondAmount = uint128(msg.value);
-        require(bondAmount >= MIN_VOTE_BOND, "Min bond");
+        require(bondAmount >= MIN_VOTE_BOND);
 
         // Check not already voted
         bytes32 vKey = _voterKey(marketId, msg.sender);
-        require(voters[vKey].bondAmount == 0, "Already voted");
+        require(voters[vKey].bondAmount == 0);
+
+        euint8 eOutcome = FHE.asEuint8(encOutcome);
+        FHE.allowThis(eOutcome);
 
         // Record vote
         voters[vKey] = VoterInfo({
-            votedOutcome: outcome,
+            encVotedOutcome: eOutcome,
             bondAmount: bondAmount,
             claimed: false
         });
 
-        // Tally bonds per outcome
-        if (outcome == 1) tally.outcome1Bonds += bondAmount;
-        else if (outcome == 2) tally.outcome2Bonds += bondAmount;
-        else if (outcome == 3) tally.outcome3Bonds += bondAmount;
-        else if (outcome == 4) tally.outcome4Bonds += bondAmount;
+        euint128 eBond = FHE.asEuint128(uint256(bondAmount));
+        FHE.allowThis(eBond);
+        
+        _addSecretVoteTallies(tally, eOutcome, eBond, market.numOutcomes);
 
         tally.totalVoters++;
         tally.totalBonded += bondAmount;
@@ -769,7 +777,32 @@ contract FhenixMarkets is ReentrancyGuard {
     }
 
     // ========================================================================
-    // 9. FINALIZE VOTES — determine winning outcome by bond majority
+    // 9a. REQUEST VOTE DECRYPTION — trigger async FHE decrypt of tallies
+    // ========================================================================
+
+    function requestVoteDecryption(bytes32 marketId) external marketExists(marketId) {
+        Market storage market = markets[marketId];
+        require(
+            market.status == STATUS_PENDING_RESOLUTION ||
+            market.status == STATUS_DISPUTED,
+            "Not in voting"
+        );
+        VoteTally storage tally = voteTallies[marketId];
+        require(block.timestamp > tally.votingDeadline);
+        require(!tally.finalized);
+        require(!tally.decryptionRequested);
+
+        tally.decryptionRequested = true;
+
+        address TM = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
+        if (FHE.isInitialized(tally.encOutcome1Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome1Bonds)), msg.sender);
+        if (FHE.isInitialized(tally.encOutcome2Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome2Bonds)), msg.sender);
+        if (market.numOutcomes >= 3 && FHE.isInitialized(tally.encOutcome3Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome3Bonds)), msg.sender);
+        if (market.numOutcomes >= 4 && FHE.isInitialized(tally.encOutcome4Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome4Bonds)), msg.sender);
+    }
+
+    // ========================================================================
+    // 9b. FINALIZE VOTES — read decrypted tallies, pick winner
     // ========================================================================
 
     function finalizeVotes(bytes32 marketId) external marketExists(marketId) {
@@ -783,22 +816,40 @@ contract FhenixMarkets is ReentrancyGuard {
         VoteTally storage tally = voteTallies[marketId];
         require(block.timestamp > tally.votingDeadline);
         require(!tally.finalized);
+        require(tally.decryptionRequested);
         require(tally.totalVoters >= MIN_VOTERS);
 
-        // Find outcome with highest bonds
-        uint128 maxBonds = tally.outcome1Bonds;
+        (uint256 raw1, bool ready1) = FHE.getDecryptResultSafe(tally.encOutcome1Bonds);
+        (uint256 raw2, bool ready2) = FHE.getDecryptResultSafe(tally.encOutcome2Bonds);
+        uint128 bonds1 = ready1 ? uint128(raw1) : 0;
+        uint128 bonds2 = ready2 ? uint128(raw2) : 0;
+
+        uint128 bonds3 = 0;
+        uint128 bonds4 = 0;
+        if (market.numOutcomes >= 3) {
+            (uint256 raw3, bool ready3) = FHE.getDecryptResultSafe(tally.encOutcome3Bonds);
+            if (ready3) bonds3 = uint128(raw3);
+        }
+        if (market.numOutcomes >= 4) {
+            (uint256 raw4, bool ready4) = FHE.getDecryptResultSafe(tally.encOutcome4Bonds);
+            if (ready4) bonds4 = uint128(raw4);
+        }
+
+        require(bonds1 + bonds2 + bonds3 + bonds4 > 0);
+
+        uint128 maxBonds = bonds1;
         uint8 winner = 1;
 
-        if (tally.outcome2Bonds > maxBonds) {
-            maxBonds = tally.outcome2Bonds;
+        if (bonds2 > maxBonds) {
+            maxBonds = bonds2;
             winner = 2;
         }
-        if (market.numOutcomes >= 3 && tally.outcome3Bonds > maxBonds) {
-            maxBonds = tally.outcome3Bonds;
+        if (market.numOutcomes >= 3 && bonds3 > maxBonds) {
+            maxBonds = bonds3;
             winner = 3;
         }
-        if (market.numOutcomes >= 4 && tally.outcome4Bonds > maxBonds) {
-            maxBonds = tally.outcome4Bonds;
+        if (market.numOutcomes >= 4 && bonds4 > maxBonds) {
+            maxBonds = bonds4;
             winner = 4;
         }
 
@@ -817,7 +868,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function confirmResolution(bytes32 marketId) external marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == STATUS_PENDING_FINALIZATION, "Not pending");
+        require(market.status == STATUS_PENDING_FINALIZATION);
 
         VoteTally storage tally = voteTallies[marketId];
         require(block.timestamp > tally.disputeDeadline);
@@ -836,16 +887,16 @@ contract FhenixMarkets is ReentrancyGuard {
         uint8   proposedOutcome
     ) external payable marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == STATUS_PENDING_FINALIZATION, "Not pending");
+        require(market.status == STATUS_PENDING_FINALIZATION);
 
         VoteTally storage tally = voteTallies[marketId];
-        require(block.timestamp <= tally.disputeDeadline, "Window closed");
-        require(proposedOutcome >= 1 && proposedOutcome <= market.numOutcomes, "Invalid");
+        require(block.timestamp <= tally.disputeDeadline);
+        require(proposedOutcome >= 1 && proposedOutcome <= market.numOutcomes);
         require(proposedOutcome != tally.winningOutcome);
 
         uint128 requiredBond = tally.totalBonded * DISPUTE_BOND_MULTIPLIER;
         uint128 bondAmount = uint128(msg.value);
-        require(bondAmount >= requiredBond, "Bond too low");
+        require(bondAmount >= requiredBond);
 
         // Store dispute info
         disputeBonds[marketId] = bondAmount;
@@ -859,12 +910,13 @@ contract FhenixMarkets is ReentrancyGuard {
         tally.winningOutcome = 0;
 
         // Reset tallies for fresh vote
-        tally.outcome1Bonds = 0;
-        tally.outcome2Bonds = 0;
-        tally.outcome3Bonds = 0;
-        tally.outcome4Bonds = 0;
+        tally.encOutcome1Bonds = FHE.asEuint128(0);
+        tally.encOutcome2Bonds = FHE.asEuint128(0);
+        tally.encOutcome3Bonds = FHE.asEuint128(0);
+        tally.encOutcome4Bonds = FHE.asEuint128(0);
         tally.totalVoters = 0;
         tally.totalBonded = 0;
+        tally.decryptionRequested = false;
 
         emit ResolutionDisputed(marketId, msg.sender, proposedOutcome);
     }
@@ -886,18 +938,18 @@ contract FhenixMarkets is ReentrancyGuard {
 
         VoteTally storage tally = voteTallies[marketId];
         uint8 winningOutcome = tally.winningOutcome;
-        require(winningOutcome >= 1, "No winner");
+        require(winningOutcome >= 1);
 
-        require(sharesToRedeem > 0, "Zero shares");
+        require(sharesToRedeem > 0);
 
         // Payout: each winning share is worth proportional to the pool
         AMMPool storage pool = ammPools[marketId];
         bytes32 oKey = _outcomeShareKey(marketId, winningOutcome);
         uint128 totalWinning = totalSharesIssued[oKey];
-        require(totalWinning > 0, "No shares");
+        require(totalWinning > 0);
 
         uint128 payout = (sharesToRedeem * pool.totalLiquidity) / totalWinning;
-        require(payout > 0, "Zero payout");
+        require(payout > 0);
         require(payout <= marketCredits[marketId]);
 
         // Update state
@@ -910,7 +962,7 @@ contract FhenixMarkets is ReentrancyGuard {
         publicShareBalances[key] -= sharesToRedeem;
 
         (bool sent, ) = payable(msg.sender).call{value: payout}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
 
         emit SharesRedeemed(marketId, msg.sender);
     }
@@ -925,30 +977,30 @@ contract FhenixMarkets is ReentrancyGuard {
         uint128 sharesToRefund
     ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_CANCELLED, "Not cancelled");
-        require(outcome >= 1 && outcome <= market.numOutcomes, "Invalid");
-        require(sharesToRefund > 0, "Zero");
+        require(market.status == MARKET_STATUS_CANCELLED);
+        require(outcome >= 1 && outcome <= market.numOutcomes);
+        require(sharesToRefund > 0);
 
         // Refund proportional to pool
         AMMPool storage pool = ammPools[marketId];
         bytes32 oKey = _outcomeShareKey(marketId, outcome);
         uint128 totalOutcome = totalSharesIssued[oKey];
-        require(totalOutcome > 0, "No shares");
+        require(totalOutcome > 0);
 
         // Proportional refund from pool
         uint128 refundAmount = (sharesToRefund * pool.totalLiquidity) / totalOutcome;
-        require(refundAmount <= marketCredits[marketId], "Insufficient");
+        require(refundAmount <= marketCredits[marketId]);
 
         marketCredits[marketId] -= refundAmount;
         totalSharesIssued[oKey] -= sharesToRefund;
 
         // ---- Update public unshielded balances ----
         bytes32 key = _shareKey(marketId, msg.sender, outcome);
-        require(publicShareBalances[key] >= sharesToRefund, "Insufficient unshielded shares");
+        require(publicShareBalances[key] >= sharesToRefund);
         publicShareBalances[key] -= sharesToRefund;
 
         (bool sent, ) = payable(msg.sender).call{value: refundAmount}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
 
         emit RefundClaimed(marketId, msg.sender);
     }
@@ -962,26 +1014,26 @@ contract FhenixMarkets is ReentrancyGuard {
         uint128 lpSharesToRefund
     ) external nonReentrant marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(market.status == MARKET_STATUS_CANCELLED, "Not cancelled");
-        require(lpSharesToRefund > 0, "Zero");
+        require(market.status == MARKET_STATUS_CANCELLED);
+        require(lpSharesToRefund > 0);
 
         bytes32 key = _lpKey(marketId, msg.sender);
-        require(!lpRefundClaimed[key], "Already claimed");
+        require(!lpRefundClaimed[key]);
 
         AMMPool storage pool = ammPools[marketId];
         uint128 refund = (lpSharesToRefund * pool.totalLiquidity) / pool.totalLPShares;
-        require(refund <= marketCredits[marketId], "Insufficient");
+        require(refund <= marketCredits[marketId]);
 
         pool.totalLPShares  -= lpSharesToRefund;
         pool.totalLiquidity -= refund;
         marketCredits[marketId] -= refund;
 
         // ---- Update public unshielded balances ----
-        require(publicLPBalances[key] >= lpSharesToRefund, "Insufficient unshielded LP shares");
+        require(publicLPBalances[key] >= lpSharesToRefund);
         publicLPBalances[key] -= lpSharesToRefund;
 
         (bool sent, ) = payable(msg.sender).call{value: refund}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
 
         emit RefundClaimed(marketId, msg.sender);
     }
@@ -992,26 +1044,35 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function withdrawCreatorFees(bytes32 marketId) external marketExists(marketId) {
         Market storage market = markets[marketId];
-        require(msg.sender == market.creator, "Not creator");
+        require(msg.sender == market.creator);
         require(
             market.status == MARKET_STATUS_RESOLVED ||
             market.status == MARKET_STATUS_CANCELLED,
             "Not finalized"
         );
-        require(!creatorFeesClaimed[marketId], "Already claimed");
+        require(!creatorFeesClaimed[marketId]);
 
         uint128 amount = marketFees[marketId].creatorFees;
-        require(amount > 0, "No fees");
+        require(amount > 0);
 
         creatorFeesClaimed[marketId] = true;
 
         (bool sent, ) = payable(msg.sender).call{value: amount}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
     }
 
     // ========================================================================
     // 16. CLAIM VOTER BOND (after resolution confirmed)
     // ========================================================================
+
+    function requestVoterDecryption(bytes32 marketId) external marketExists(marketId) {
+        bytes32 vKey = _voterKey(marketId, msg.sender);
+        VoterInfo storage info = voters[vKey];
+        require(info.bondAmount > 0);
+        require(!info.claimed);
+        require(FHE.isInitialized(info.encVotedOutcome));
+        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(euint8.unwrap(info.encVotedOutcome)), msg.sender);
+    }
 
     function claimVoterBond(bytes32 marketId) external marketExists(marketId) {
         Market storage market = markets[marketId];
@@ -1023,29 +1084,33 @@ contract FhenixMarkets is ReentrancyGuard {
 
         bytes32 vKey = _voterKey(marketId, msg.sender);
         VoterInfo storage info = voters[vKey];
-        require(info.bondAmount > 0, "No bond");
-        require(!info.claimed, "Already claimed");
+        require(info.bondAmount > 0);
+        require(!info.claimed);
 
         VoteTally storage tally = voteTallies[marketId];
         uint128 payout = info.bondAmount;
 
-        // Winning voters also get a share of voter rewards
-        if (info.votedOutcome == tally.winningOutcome && tally.winningOutcome > 0) {
-            MarketFees storage fees = marketFees[marketId];
-            uint128 voterPool = (fees.protocolFees * VOTER_REWARD_PERCENT) / 100;
-
-            uint128 winnerBonds = _getOutcomeBonds(tally, tally.winningOutcome);
-            if (winnerBonds > 0) {
-                uint128 reward = (voterPool * info.bondAmount) / winnerBonds;
-                payout += reward;
-                voterRewards[msg.sender] += reward;
+        if (FHE.isInitialized(info.encVotedOutcome) && tally.winningOutcome > 0) {
+            (uint256 rawVote, bool voteReady) = FHE.getDecryptResultSafe(info.encVotedOutcome);
+            if (voteReady) {
+                uint8 votedFor = uint8(rawVote);
+                if (votedFor == tally.winningOutcome) {
+                    MarketFees storage fees = marketFees[marketId];
+                    uint128 voterPool = (fees.protocolFees * VOTER_REWARD_PERCENT) / 100;
+                    uint128 totalWinnerBonds = tally.totalBonded;
+                    if (totalWinnerBonds > 0) {
+                        uint128 reward = (voterPool * info.bondAmount) / totalWinnerBonds;
+                        payout += reward;
+                        voterRewards[msg.sender] += reward;
+                    }
+                }
             }
         }
 
         info.claimed = true;
 
         (bool sent, ) = payable(msg.sender).call{value: payout}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
     }
 
     // ========================================================================
@@ -1053,7 +1118,7 @@ contract FhenixMarkets is ReentrancyGuard {
     // ========================================================================
 
     function claimDisputeBond(bytes32 marketId) external marketExists(marketId) {
-        require(msg.sender == disputers[marketId], "Not disputer");
+        require(msg.sender == disputers[marketId]);
         require(
             markets[marketId].status == MARKET_STATUS_RESOLVED ||
             markets[marketId].status == MARKET_STATUS_CANCELLED,
@@ -1061,12 +1126,12 @@ contract FhenixMarkets is ReentrancyGuard {
         );
 
         uint128 bond = disputeBonds[marketId];
-        require(bond > 0, "No bond");
+        require(bond > 0);
 
         disputeBonds[marketId] = 0;
 
         (bool sent, ) = payable(msg.sender).call{value: bond}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
     }
 
     // ========================================================================
@@ -1075,12 +1140,12 @@ contract FhenixMarkets is ReentrancyGuard {
 
     function claimVoterReward() external {
         uint128 reward = voterRewards[msg.sender];
-        require(reward > 0, "No rewards");
+        require(reward > 0);
 
         voterRewards[msg.sender] = 0;
 
         (bool sent, ) = payable(msg.sender).call{value: reward}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
     }
 
     // ========================================================================
@@ -1088,142 +1153,14 @@ contract FhenixMarkets is ReentrancyGuard {
     // ========================================================================
 
     function withdrawProtocolFees(uint128 amount) external onlyDeployer {
-        require(amount <= protocolTreasury, "Exceeds treasury");
+        require(amount <= protocolTreasury);
         protocolTreasury -= amount;
 
         (bool sent, ) = payable(deployer).call{value: amount}("");
-        require(sent, "ETH transfer failed");
+        require(sent);
     }
 
-    // ########################################################################
-    //                    MULTISIG TREASURY
-    // ########################################################################
 
-    struct MultisigConfig {
-        address signer1;
-        address signer2;
-        address signer3;
-        uint8   threshold;        // signatures needed (2 of 3)
-        bool    initialized;
-    }
-
-    struct TreasuryProposal {
-        bytes32 id;
-        address proposer;
-        address recipient;
-        uint128 amount;
-        uint8   approvals;
-        bool    executed;
-        uint64  createdAt;
-    }
-
-    MultisigConfig public multisig;
-
-    mapping(bytes32 => TreasuryProposal) public treasuryProposals;
-    // keccak256(proposalId, signer) => approved
-    mapping(bytes32 => bool) public multisigApprovals;
-
-    event MultisigInitialized(address signer1, address signer2, address signer3, uint8 threshold);
-    event TreasuryProposalCreated(bytes32 indexed proposalId, address recipient, uint128 amount);
-    event TreasuryProposalApproved(bytes32 indexed proposalId, address signer);
-    event TreasuryProposalExecuted(bytes32 indexed proposalId, address recipient, uint128 amount);
-
-    modifier onlyMultisigSigner() {
-        require(
-            msg.sender == multisig.signer1 ||
-            msg.sender == multisig.signer2 ||
-            msg.sender == multisig.signer3,
-            "Not multisig signer"
-        );
-        _;
-    }
-
-    /// @notice Initialize multisig with 3 signers (2-of-3 by default)
-    function initMultisig(
-        address signer1,
-        address signer2,
-        address signer3
-    ) external onlyDeployer {
-        require(!multisig.initialized, "Multisig already initialized");
-        require(signer1 != address(0) && signer2 != address(0) && signer3 != address(0), "Zero signer");
-        require(signer1 != signer2 && signer2 != signer3 && signer1 != signer3, "Duplicate signers");
-
-        multisig = MultisigConfig({
-            signer1: signer1,
-            signer2: signer2,
-            signer3: signer3,
-            threshold: 2,
-            initialized: true
-        });
-
-        emit MultisigInitialized(signer1, signer2, signer3, 2);
-    }
-
-    /// @notice Propose a treasury withdrawal (any multisig signer)
-    function proposeTreasuryWithdrawal(
-        address recipient,
-        uint128 amount
-    ) external onlyMultisigSigner returns (bytes32) {
-        require(multisig.initialized, "Multisig not initialized");
-        require(recipient != address(0), "Zero recipient");
-        require(amount > 0 && amount <= protocolTreasury, "Invalid amount");
-
-        bytes32 proposalId = keccak256(abi.encodePacked(
-            msg.sender, recipient, amount, block.timestamp
-        ));
-        require(treasuryProposals[proposalId].proposer == address(0), "Exists");
-
-        treasuryProposals[proposalId] = TreasuryProposal({
-            id: proposalId,
-            proposer: msg.sender,
-            recipient: recipient,
-            amount: amount,
-            approvals: 1,       // proposer auto-approves
-            executed: false,
-            createdAt: uint64(block.timestamp)
-        });
-
-        // Auto-approve for proposer
-        bytes32 approvalKey = keccak256(abi.encodePacked(proposalId, msg.sender));
-        multisigApprovals[approvalKey] = true;
-
-        emit TreasuryProposalCreated(proposalId, recipient, amount);
-        emit TreasuryProposalApproved(proposalId, msg.sender);
-
-        return proposalId;
-    }
-
-    /// @notice Approve a treasury proposal (another multisig signer)
-    function approveTreasuryProposal(bytes32 proposalId) external onlyMultisigSigner {
-        TreasuryProposal storage prop = treasuryProposals[proposalId];
-        require(prop.proposer != address(0), "Not found");
-        require(!prop.executed, "Already executed");
-
-        bytes32 approvalKey = keccak256(abi.encodePacked(proposalId, msg.sender));
-        require(!multisigApprovals[approvalKey], "Already approved");
-
-        multisigApprovals[approvalKey] = true;
-        prop.approvals++;
-
-        emit TreasuryProposalApproved(proposalId, msg.sender);
-    }
-
-    /// @notice Execute a treasury proposal once threshold is met
-    function executeTreasuryProposal(bytes32 proposalId) external onlyMultisigSigner {
-        TreasuryProposal storage prop = treasuryProposals[proposalId];
-        require(prop.proposer != address(0), "Not found");
-        require(!prop.executed, "Already executed");
-        require(prop.approvals >= multisig.threshold, "Not enough approvals");
-        require(prop.amount <= protocolTreasury, "Exceeds treasury");
-
-        prop.executed = true;
-        protocolTreasury -= prop.amount;
-
-        (bool sent, ) = payable(prop.recipient).call{value: prop.amount}("");
-        require(sent, "ETH transfer failed");
-
-        emit TreasuryProposalExecuted(proposalId, prop.recipient, prop.amount);
-    }
 
     // ########################################################################
     //                     VIEW FUNCTIONS
@@ -1256,29 +1193,7 @@ contract FhenixMarkets is ReentrancyGuard {
         }
     }
 
-    /// @notice Get market info
-    function getMarket(bytes32 marketId)
-        external view
-        returns (Market memory)
-    {
-        return markets[marketId];
-    }
 
-    /// @notice Get AMM pool info
-    function getPool(bytes32 marketId)
-        external view
-        returns (AMMPool memory)
-    {
-        return ammPools[marketId];
-    }
-
-    /// @notice Get vote tally
-    function getVoteTally(bytes32 marketId)
-        external view
-        returns (VoteTally memory)
-    {
-        return voteTallies[marketId];
-    }
 
     // ########################################################################
     //                          INTERNAL — AMM MATH
@@ -1332,25 +1247,33 @@ contract FhenixMarkets is ReentrancyGuard {
         // For the target outcome, new reserve = rI + a - sharesOut
         // For non-target outcomes, new reserve = rK + a
         if (outcome == 1) {
-            pool.reserve1 = uint128(uint256(pool.reserve1) + a - uint256(sharesOut));
-            pool.reserve2 += amountToPool;
-            if (n >= 3) pool.reserve3 += amountToPool;
-            if (n >= 4) pool.reserve4 += amountToPool;
+            unchecked {
+                pool.reserve1 = uint128(uint256(pool.reserve1) + a - uint256(sharesOut));
+                pool.reserve2 += amountToPool;
+                if (n >= 3) pool.reserve3 += amountToPool;
+                if (n >= 4) pool.reserve4 += amountToPool;
+            }
         } else if (outcome == 2) {
-            pool.reserve1 += amountToPool;
-            pool.reserve2 = uint128(uint256(pool.reserve2) + a - uint256(sharesOut));
-            if (n >= 3) pool.reserve3 += amountToPool;
-            if (n >= 4) pool.reserve4 += amountToPool;
+            unchecked {
+                pool.reserve1 += amountToPool;
+                pool.reserve2 = uint128(uint256(pool.reserve2) + a - uint256(sharesOut));
+                if (n >= 3) pool.reserve3 += amountToPool;
+                if (n >= 4) pool.reserve4 += amountToPool;
+            }
         } else if (outcome == 3) {
-            pool.reserve1 += amountToPool;
-            pool.reserve2 += amountToPool;
-            pool.reserve3 = uint128(uint256(pool.reserve3) + a - uint256(sharesOut));
-            if (n >= 4) pool.reserve4 += amountToPool;
+            unchecked {
+                pool.reserve1 += amountToPool;
+                pool.reserve2 += amountToPool;
+                pool.reserve3 = uint128(uint256(pool.reserve3) + a - uint256(sharesOut));
+                if (n >= 4) pool.reserve4 += amountToPool;
+            }
         } else {
-            pool.reserve1 += amountToPool;
-            pool.reserve2 += amountToPool;
-            if (n >= 3) pool.reserve3 += amountToPool;
-            pool.reserve4 = uint128(uint256(pool.reserve4) + a - uint256(sharesOut));
+            unchecked {
+                pool.reserve1 += amountToPool;
+                pool.reserve2 += amountToPool;
+                if (n >= 3) pool.reserve3 += amountToPool;
+                pool.reserve4 = uint128(uint256(pool.reserve4) + a - uint256(sharesOut));
+            }
         }
     }
 
@@ -1453,14 +1376,7 @@ contract FhenixMarkets is ReentrancyGuard {
         }
     }
 
-    /// @dev Get bonds for a specific outcome from the tally
-    function _getOutcomeBonds(VoteTally storage tally, uint8 outcome) internal view returns (uint128) {
-        if (outcome == 1) return tally.outcome1Bonds;
-        if (outcome == 2) return tally.outcome2Bonds;
-        if (outcome == 3) return tally.outcome3Bonds;
-        if (outcome == 4) return tally.outcome4Bonds;
-        return 0;
-    }
+
 
     // ========================================================================
     // VIEW: Encrypted balance getters (for cofhejs permit/sealOutput)
@@ -1474,6 +1390,63 @@ contract FhenixMarkets is ReentrancyGuard {
     /// @notice Returns encrypted LP balance handle for the caller
     function getEncLPBalance(bytes32 marketId) external view returns (euint128) {
         return encLPBalances[_lpKey(marketId, msg.sender)];
+    }
+
+    // ========================================================================
+    // FHE HELPER — optimized balance selection
+    // ========================================================================
+
+    function _fheAddEnc(euint128 current, euint128 amount) internal returns (euint128) {
+        if (FHE.isInitialized(current)) {
+            euint128 result = FHE.add(current, amount);
+            FHE.allowThis(result);
+            FHE.allowSender(result);
+            return result;
+        } else {
+            FHE.allowThis(amount);
+            FHE.allowSender(amount);
+            return amount;
+        }
+    }
+
+    function _creditSecretShares(bytes32 marketId, address user, euint8 eOutcome, euint128 eShares, uint8 n) internal {
+        euint128 zero = FHE.asEuint128(0);
+        FHE.allowThis(zero);
+        for (uint8 i = 1; i <= n; i++) {
+            bytes32 key = _shareKey(marketId, user, i);
+            ebool isThis = FHE.eq(eOutcome, FHE.asEuint8(i));
+            euint128 delta = FHE.select(isThis, eShares, zero);
+            FHE.allowThis(delta);
+            encShareBalances[key] = _fheAddEnc(encShareBalances[key], delta);
+        }
+    }
+
+    function _addSecretVoteTallies(VoteTally storage tally, euint8 eOutcome, euint128 eBond, uint8 n) internal {
+        euint128 zero = FHE.asEuint128(0);
+        FHE.allowThis(zero);
+
+        ebool is1 = FHE.eq(eOutcome, FHE.asEuint8(1));
+        euint128 delta1 = FHE.select(is1, eBond, zero);
+        FHE.allowThis(delta1);
+        tally.encOutcome1Bonds = _fheAddEnc(tally.encOutcome1Bonds, delta1);
+
+        ebool is2 = FHE.eq(eOutcome, FHE.asEuint8(2));
+        euint128 delta2 = FHE.select(is2, eBond, zero);
+        FHE.allowThis(delta2);
+        tally.encOutcome2Bonds = _fheAddEnc(tally.encOutcome2Bonds, delta2);
+
+        if (n >= 3) {
+            ebool is3 = FHE.eq(eOutcome, FHE.asEuint8(3));
+            euint128 delta3 = FHE.select(is3, eBond, zero);
+            FHE.allowThis(delta3);
+            tally.encOutcome3Bonds = _fheAddEnc(tally.encOutcome3Bonds, delta3);
+        }
+        if (n >= 4) {
+            ebool is4 = FHE.eq(eOutcome, FHE.asEuint8(4));
+            euint128 delta4 = FHE.select(is4, eBond, zero);
+            FHE.allowThis(delta4);
+            tally.encOutcome4Bonds = _fheAddEnc(tally.encOutcome4Bonds, delta4);
+        }
     }
 
     // ========================================================================
