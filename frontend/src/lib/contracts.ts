@@ -6,6 +6,10 @@
 // ============================================================================
 
 import { ethers, Contract, JsonRpcProvider, BrowserProvider } from 'ethers'
+import { createCofheClient, createCofheConfig } from '@cofhe/sdk/web'
+import { Encryptable } from '@cofhe/sdk'
+import { createPublicClient, createWalletClient, custom, http } from 'viem'
+import { sepolia } from 'viem/chains'
 import FhenixMarketsArtifact from './abis/FhenixMarkets.json'
 import FhenixGovernanceArtifact from './abis/FhenixGovernance.json'
 
@@ -17,8 +21,8 @@ import { devLog, devWarn } from './logger'
 // ADDRESSES & CHAIN
 // ============================================================================
 
-export const FHENIX_MARKETS_ADDRESS = '0x050262EDE0E6320B2A9AB463776D87cdAfD44572'
-export const FHENIX_GOVERNANCE_ADDRESS = '0x08e04595ACC18e4282CacB7c907b592a3031cA94'
+export const FHENIX_MARKETS_ADDRESS = '0x5CDd4A82Ec52E2009072d21DF8EF233841de607B'
+export const FHENIX_GOVERNANCE_ADDRESS = '0x75042ED84d417a4c897ACf1f4112467bC041d6a3'
 export const SEPOLIA_CHAIN_ID = 11155111
 export const SEPOLIA_RPC_URL = 'https://ethereum-sepolia.publicnode.com'
 
@@ -104,22 +108,97 @@ export async function getProvider(): Promise<BrowserProvider> {
   return await getProviderFn()
 }
 
-/** Ensure cofhejs is initialized for encryption */
-import { cofhejs, Encryptable } from 'cofhejs/web'
+/** Ensure @cofhe/sdk is initialized for encryption (3-step flow) */
+let _cofheClient: any = null
+export async function ensureCofheInitialized(): Promise<any> {
+  if (_cofheClient) return _cofheClient
 
-let _cofheInitialized = false
-export async function ensureCofheInitialized(): Promise<void> {
-  if (_cofheInitialized) return
   const provider = await getProvider()
-  const signer = await getSigner()
-  const res = await cofhejs.initializeWithEthers({
-    ethersProvider: provider,
-    ethersSigner: signer,
-  })
-  if (!res.success) {
-    throw new Error(`Failed to initialize cofhejs: ${res.error?.message}`)
+  const network = await provider.getNetwork()
+  if (Number(network.chainId) !== SEPOLIA_CHAIN_ID) {
+    await ensureSepoliaNetwork()
   }
-  _cofheInitialized = true
+
+  // Step 1: Create config
+  const config = createCofheConfig({
+    supportedChains: [sepolia],
+  })
+
+  // Step 2: Create client
+  const client = createCofheClient(config)
+
+  // Step 3: Connect viem clients
+  const publicClient = createPublicClient({
+    chain: sepolia,
+    transport: http(SEPOLIA_RPC_URL),
+  })
+
+  const walletClient = createWalletClient({
+    chain: sepolia,
+    transport: custom((window as any).ethereum),
+  })
+
+  await client.connect(publicClient, walletClient)
+
+  _cofheClient = client
+  _devLog('[contracts] @cofhe/sdk initialized')
+  return _cofheClient
+}
+
+// ============================================================================
+// DECRYPT CACHE — reduces wallet popups for repeated permit requests
+// ============================================================================
+// Ciphertext hashes are deterministic for the same encrypted value, so caching
+// decrypted results during a session is safe. Invalidated automatically when
+// the on-chain handle changes (e.g. after buy/sell mutates the balance).
+
+const VIEW_CACHE_TTL_MS = 5 * 60_000 // 5 min
+const _decryptViewCache = new Map<string, { value: bigint; expires: number }>()
+const _decryptTxCache = new Map<string, { plaintext: bigint; signature: string; expires: number }>()
+
+export function clearDecryptCache(): void {
+  _decryptViewCache.clear()
+  _decryptTxCache.clear()
+}
+
+/**
+ * Decrypt a value for viewing (off-chain).
+ * Uses the @cofhe/sdk builder pattern and auto-handles permits.
+ * Results are cached for 5 minutes per ciphertext handle to reduce wallet popups.
+ */
+export async function decryptView(encryptedValue: string): Promise<bigint> {
+  const now = Date.now()
+  const cached = _decryptViewCache.get(encryptedValue)
+  if (cached && cached.expires > now) return cached.value
+
+  const client = await ensureCofheInitialized()
+  const result = await client.decryptForView(encryptedValue).execute()
+  const value = BigInt(result)
+  _decryptViewCache.set(encryptedValue, { value, expires: now + VIEW_CACHE_TTL_MS })
+  return value
+}
+
+/**
+ * Decrypt a value for posting on-chain (threshold reveal).
+ * Returns both the plaintext and the threshold signature.
+ * Signatures are cached per ciphertext handle for the session.
+ */
+export async function decryptTx(encryptedValue: string): Promise<{ plaintext: bigint, signature: string }> {
+  const now = Date.now()
+  const cached = _decryptTxCache.get(encryptedValue)
+  if (cached && cached.expires > now) {
+    return { plaintext: cached.plaintext, signature: cached.signature }
+  }
+
+  const client = await ensureCofheInitialized()
+  const { decryptedValue, signature } = await client.decryptForTx(encryptedValue).execute()
+  const plaintext = BigInt(decryptedValue)
+  _decryptTxCache.set(encryptedValue, { plaintext, signature, expires: now + VIEW_CACHE_TTL_MS })
+  return { plaintext, signature }
+}
+
+function _devLog(msg: string, ...args: any[]) {
+  console.log(msg, ...args)
 }
 
 // ============================================================================
@@ -179,6 +258,10 @@ export interface VoteTallyData {
   totalVoters: number     // uint8
   finalized: boolean
   decryptionRequested: boolean
+  encOutcome1Bonds: string
+  encOutcome2Bonds: string
+  encOutcome3Bonds: string
+  encOutcome4Bonds: string
 }
 
 export interface PriceData {
@@ -260,6 +343,10 @@ export async function fetchVoteTally(marketId: string): Promise<VoteTallyData | 
       totalVoters: Number(v.totalVoters),
       finalized: v.finalized,
       decryptionRequested: v.decryptionRequested,
+      encOutcome1Bonds: v.encOutcome1Bonds.toString(),
+      encOutcome2Bonds: v.encOutcome2Bonds.toString(),
+      encOutcome3Bonds: v.encOutcome3Bonds.toString(),
+      encOutcome4Bonds: v.encOutcome4Bonds.toString(),
     }
   } catch (err) {
     devWarn('[contracts] fetchVoteTally failed:', err)
@@ -322,6 +409,26 @@ export async function getPublicLPBalance(marketId: string, address: string): Pro
     return BigInt(await c.publicLPBalances(key))
   } catch (err) {
     return 0n
+  }
+}
+
+export async function getEncryptedShareBalance(marketId: string, address: string, outcome: number): Promise<string> {
+  try {
+    const c = getMarketsRead()
+    const balance = await c.getEncryptedShareBalance(marketId, address, outcome)
+    return balance.toString()
+  } catch (err) {
+    return '0'
+  }
+}
+
+export async function getEncryptedLPBalance(marketId: string, address: string): Promise<string> {
+  try {
+    const c = getMarketsRead()
+    const balance = await c.getEncryptedLPBalance(marketId, address)
+    return balance.toString()
+  } catch (err) {
+    return '0'
   }
 }
 
@@ -449,12 +556,10 @@ export async function buyShares(
 ): Promise<ethers.TransactionReceipt> {
   devLog('[contracts] buyShares', { marketId, outcome, amount: amount.toString() })
 
-  await ensureCofheInitialized()
-  const encRes = await cofhejs.encrypt([Encryptable.uint8(BigInt(outcome))])
-  if (!encRes.success) {
-    throw new Error(`Encryption failed: ${encRes.error?.message}`)
-  }
-  const encryptedOutcome = encRes.data[0]
+  const client = await ensureCofheInitialized()
+  const [encryptedOutcome] = await client
+    .encryptInputs([Encryptable.uint8(BigInt(outcome))])
+    .execute()
 
   const signer = await getSigner()
   const contract = new Contract(FHENIX_MARKETS_ADDRESS, FhenixMarketsABI, signer)
@@ -515,12 +620,10 @@ export async function voteOutcome(
 ): Promise<ethers.TransactionReceipt> {
   devLog('[contracts] voteOutcome', { marketId, outcome, bondAmount: bondAmount.toString() })
 
-  await ensureCofheInitialized()
-  const encRes = await cofhejs.encrypt([Encryptable.uint8(BigInt(outcome))])
-  if (!encRes.success) {
-    throw new Error(`Encryption failed: ${encRes.error?.message}`)
-  }
-  const encryptedOutcome = encRes.data[0]
+  const client = await ensureCofheInitialized()
+  const [encryptedOutcome] = await client
+    .encryptInputs([Encryptable.uint8(BigInt(outcome))])
+    .execute()
 
   const signer = await getSigner()
   const contract = new Contract(FHENIX_MARKETS_ADDRESS, FhenixMarketsABI, signer)
@@ -546,6 +649,30 @@ export async function requestVoterDecryption(marketId: string): Promise<ethers.T
   devLog('[contracts] requestVoterDecryption', { marketId })
   const c = await getMarketsWrite()
   const tx = await c.requestVoterDecryption(marketId)
+  return await waitForReceipt(tx)
+}
+
+export async function revealOutcomeTally(
+  marketId: string,
+  outcomeIndex: number,
+  plaintext: number,
+  signature: string
+): Promise<ethers.TransactionReceipt> {
+  devLog('[contracts] revealOutcomeTally', { marketId, outcomeIndex, plaintext })
+  const c = await getMarketsWrite()
+  const tx = await c.revealOutcomeTally(marketId, outcomeIndex, plaintext, signature)
+  return await waitForReceipt(tx)
+}
+
+export async function revealUnshieldResult(
+  reqId: number,
+  plaintext: boolean,
+  signature: string
+): Promise<ethers.TransactionReceipt> {
+  devLog('[contracts] revealUnshieldResult', { reqId, plaintext })
+  const c = await getMarketsWrite()
+  // Convert boolean to 1 or 0 for the uint128 contract parameter
+  const tx = await c.revealUnshieldResult(reqId, plaintext ? 1n : 0n, signature)
   return await waitForReceipt(tx)
 }
 
@@ -800,10 +927,13 @@ export async function ensureSepoliaNetwork(): Promise<void> {
       ])
     }
   } catch (err) {
-    devWarn('[contracts] Failed to switch network:', err)
+    devWarn('[contracts] Network switch failed:', err)
     throw new Error('Please switch to Sepolia network in your wallet.')
   }
 }
+
+// Keep old name as alias for backward compat
+export const ensureFhenixNetwork = ensureSepoliaNetwork
 
 /** Parse contract revert reason from error */
 export function parseContractError(err: any): string {

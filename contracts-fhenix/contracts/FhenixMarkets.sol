@@ -15,7 +15,7 @@ pragma solidity ^0.8.20;
 // ============================================================================
 
 import {FHE, euint8, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
-import {ITaskManager, InEuint8} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
+import {InEuint8} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract FhenixMarkets is ReentrancyGuard {
@@ -166,6 +166,14 @@ contract FhenixMarkets is ReentrancyGuard {
     mapping(bytes32 => uint128) public publicShareBalances; // keccak256(marketId, user, outcome)
     mapping(bytes32 => uint128) public publicLPBalances;    // keccak256(marketId, user)
 
+    function getEncryptedShareBalance(bytes32 marketId, address user, uint8 outcome) external view returns (euint128) {
+        return encShareBalances[_shareKey(marketId, user, outcome)];
+    }
+
+    function getEncryptedLPBalance(bytes32 marketId, address user) external view returns (euint128) {
+        return encLPBalances[_lpKey(marketId, user)];
+    }
+
     struct UnshieldRequest {
         bytes32 marketId;
         address user;
@@ -176,7 +184,7 @@ contract FhenixMarkets is ReentrancyGuard {
 
     uint256 public nextUnshieldId;
     mapping(uint256 => UnshieldRequest) public unshieldRequests;
-    mapping(uint256 => ebool) private encUnshieldStatus;
+    mapping(uint256 => euint128) private encUnshieldStatus;
 
     // ========================================================================
     // EVENTS
@@ -225,6 +233,9 @@ contract FhenixMarkets is ReentrancyGuard {
     event ResolutionDisputed(bytes32 indexed marketId, address disputer, uint8 proposedOutcome);
     event SharesRedeemed(bytes32 indexed marketId, address indexed redeemer);
     event RefundClaimed(bytes32 indexed marketId, address indexed claimer);
+    
+    event VoteDecryptionRequested(bytes32 indexed marketId);
+    event VoterDecryptionRequested(bytes32 indexed marketId, address indexed voter);
 
 
 
@@ -392,8 +403,10 @@ contract FhenixMarkets is ReentrancyGuard {
         });
 
         FHE.allowThis(isSufficient);
-        encUnshieldStatus[reqId] = isSufficient;
-        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(ebool.unwrap(isSufficient)), msg.sender);
+        euint128 encStatus = FHE.select(isSufficient, FHE.asEuint128(1), FHE.asEuint128(0));
+        FHE.allowThis(encStatus);
+        encUnshieldStatus[reqId] = encStatus;
+        FHE.allowPublic(encStatus);
 
         emit UnshieldRequested(reqId, msg.sender, marketId, outcome, amount);
         return reqId;
@@ -421,11 +434,21 @@ contract FhenixMarkets is ReentrancyGuard {
         });
 
         FHE.allowThis(isSufficient);
-        encUnshieldStatus[reqId] = isSufficient;
-        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(ebool.unwrap(isSufficient)), msg.sender);
+        euint128 encStatus = FHE.select(isSufficient, FHE.asEuint128(1), FHE.asEuint128(0));
+        FHE.allowThis(encStatus);
+        encUnshieldStatus[reqId] = encStatus;
+        FHE.allowPublic(encStatus);
 
         emit UnshieldRequested(reqId, msg.sender, marketId, 0, amount);
         return reqId;
+    }
+
+    function revealUnshieldResult(
+        uint256 reqId,
+        uint128 plaintext,
+        bytes calldata signature
+    ) external {
+        FHE.publishDecryptResult(encUnshieldStatus[reqId], plaintext, signature);
     }
 
     function executeUnshield(uint256 reqId) external {
@@ -433,9 +456,10 @@ contract FhenixMarkets is ReentrancyGuard {
         require(req.user != address(0));
         require(!req.executed);
 
-        ebool isSufficient = encUnshieldStatus[reqId];
-        (bool success, bool decrypted) = FHE.getDecryptResultSafe(isSufficient);
+        euint128 isSufficient = encUnshieldStatus[reqId];
+        (uint256 raw, bool decrypted) = FHE.getDecryptResultSafe(isSufficient);
         require(decrypted);
+        bool success = raw > 0;
 
         req.executed = true;
 
@@ -794,11 +818,30 @@ contract FhenixMarkets is ReentrancyGuard {
 
         tally.decryptionRequested = true;
 
-        address TM = 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9;
-        if (FHE.isInitialized(tally.encOutcome1Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome1Bonds)), msg.sender);
-        if (FHE.isInitialized(tally.encOutcome2Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome2Bonds)), msg.sender);
-        if (market.numOutcomes >= 3 && FHE.isInitialized(tally.encOutcome3Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome3Bonds)), msg.sender);
-        if (market.numOutcomes >= 4 && FHE.isInitialized(tally.encOutcome4Bonds)) ITaskManager(TM).createDecryptTask(uint256(euint128.unwrap(tally.encOutcome4Bonds)), msg.sender);
+        if (FHE.isInitialized(tally.encOutcome1Bonds)) FHE.allowPublic(tally.encOutcome1Bonds);
+        if (FHE.isInitialized(tally.encOutcome2Bonds)) FHE.allowPublic(tally.encOutcome2Bonds);
+        if (market.numOutcomes >= 3 && FHE.isInitialized(tally.encOutcome3Bonds)) FHE.allowPublic(tally.encOutcome3Bonds);
+        if (market.numOutcomes >= 4 && FHE.isInitialized(tally.encOutcome4Bonds)) FHE.allowPublic(tally.encOutcome4Bonds);
+
+        emit VoteDecryptionRequested(marketId);
+    }
+
+    /**
+     * @notice Callback for threshold network to provide decrypted outcome tallies.
+     */
+    function revealOutcomeTally(
+        bytes32 marketId,
+        uint8 outcomeIndex,
+        uint128 plaintext,
+        bytes calldata signature
+    ) external {
+        VoteTally storage tally = voteTallies[marketId];
+        require(tally.decryptionRequested, "Not requested");
+        
+        if (outcomeIndex == 1) FHE.publishDecryptResult(tally.encOutcome1Bonds, plaintext, signature);
+        else if (outcomeIndex == 2) FHE.publishDecryptResult(tally.encOutcome2Bonds, plaintext, signature);
+        else if (outcomeIndex == 3) FHE.publishDecryptResult(tally.encOutcome3Bonds, plaintext, signature);
+        else if (outcomeIndex == 4) FHE.publishDecryptResult(tally.encOutcome4Bonds, plaintext, signature);
     }
 
     // ========================================================================
@@ -1071,7 +1114,20 @@ contract FhenixMarkets is ReentrancyGuard {
         require(info.bondAmount > 0);
         require(!info.claimed);
         require(FHE.isInitialized(info.encVotedOutcome));
-        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(euint8.unwrap(info.encVotedOutcome)), msg.sender);
+        
+        FHE.allowPublic(info.encVotedOutcome);
+        emit VoterDecryptionRequested(marketId, msg.sender);
+    }
+
+    function revealVoterOutcome(
+        bytes32 marketId,
+        address voter,
+        uint8 plaintext,
+        bytes calldata signature
+    ) external {
+        bytes32 vKey = _voterKey(marketId, voter);
+        VoterInfo storage info = voters[vKey];
+        FHE.publishDecryptResult(info.encVotedOutcome, plaintext, signature);
     }
 
     function claimVoterBond(bytes32 marketId) external marketExists(marketId) {

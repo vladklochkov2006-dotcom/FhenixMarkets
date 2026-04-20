@@ -32,8 +32,16 @@ import { Footer } from '@/components/Footer'
 import { ClaimWinningsModal } from '@/components/ClaimWinningsModal'
 import { EmptyState } from '@/components/EmptyState'
 import { cn, formatCredits } from '@/lib/utils'
-import { devWarn } from '../lib/logger'
-import { calculateAllPrices, calculateSellTokensOut, type AMMReserves } from '@/lib/amm'
+import { devLog, devWarn } from '../lib/logger'
+import { 
+  calculateAllPrices, 
+  calculateSellTokensOut, 
+  type AMMReserves 
+} from '@/lib/amm'
+import {
+  getEncryptedShareBalance,
+  decryptView,
+} from '@/lib/contracts'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 
 type BetFilter = 'all' | 'accepted' | 'unredeemed' | 'settled' | 'history' | 'watchlist'
@@ -107,8 +115,8 @@ function formatShareQuantity(quantity: bigint): string {
   })
 }
 
-function getOpenPositionMetrics(bet: Bet, market: Market | undefined) {
-  const shares = bet.sharesReceived || bet.amount
+function getOpenPositionMetrics(bet: Bet, market: Market | undefined, onChainBalance?: bigint) {
+  const shares = onChainBalance !== undefined ? onChainBalance : (bet.sharesReceived || bet.amount)
   const sharesRaw = Number(shares) / 1e18
   const amountRaw = Number(bet.amount) / 1e18
   const avgPrice = sharesRaw > 0 ? amountRaw / sharesRaw : 0
@@ -151,7 +159,9 @@ export function MyBets() {
   } = useBetsStore()
   const { markets, fetchMarkets } = useRealMarketsStore()
   const [isLoading, setIsLoading] = useState(true)
+  const [isSyncing, setIsSyncing] = useState(false)
   const [filter, setFilter] = useState<BetFilter>('accepted')
+  const [onChainBalances, setOnChainBalances] = useState<Record<string, bigint>>({})
   const [claimModalBet, setClaimModalBet] = useState<Bet | null>(null)
   const [claimModalMode, setClaimModalMode] = useState<'winnings' | 'refund'>('winnings')
   const [claimRepairNotice, setClaimRepairNotice] = useState<string | null>(null)
@@ -297,6 +307,36 @@ export function MyBets() {
     setIsLoading(false)
   }
 
+  // Handle Syncing on-chain balances
+  const handleSyncOnChain = async () => {
+    if (!wallet.address) return
+    setIsSyncing(true)
+    try {
+      devLog('[MyBets] Syncing on-chain balances...')
+      const newBalances: Record<string, bigint> = {}
+      
+      // We only sync active bets for now to save on permit calls
+      const active = userBets.filter(b => b.status === 'active')
+      
+      for (const bet of active) {
+        const outcomeIdx = outcomeToIndex(bet.outcome)
+        const encBalance = await getEncryptedShareBalance(bet.marketId, wallet.address, outcomeIdx)
+        if (encBalance && encBalance !== '0') {
+          // decryptView handles the permit internally
+          const plaintext = await decryptView(encBalance)
+          newBalances[bet.id] = plaintext
+        }
+      }
+      
+      setOnChainBalances(prev => ({ ...prev, ...newBalances }))
+      devLog('[MyBets] Sync complete')
+    } catch (err) {
+      devWarn('[MyBets] Sync failed:', err)
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   // Open claim/refund modal for a specific bet
   const openClaimModal = (bet: Bet, mode: 'winnings' | 'refund') => {
     setClaimModalBet(bet)
@@ -408,6 +448,15 @@ export function MyBets() {
               >
                 <Download className="w-4 h-4" />
                 <span className="hidden sm:inline">Import</span>
+              </button>
+              <button
+                onClick={handleSyncOnChain}
+                disabled={isSyncing || !wallet.address}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-500/10 border border-brand-500/20 hover:bg-brand-500/20 transition-colors text-brand-400 text-sm"
+                title="Sync private balances from Fhenix"
+              >
+                <Shield className={cn("w-4 h-4", isSyncing && "animate-spin")} />
+                <span className="hidden sm:inline">{isSyncing ? 'Syncing...' : 'Sync with Chain'}</span>
               </button>
               <button
                 onClick={handleRefresh}
@@ -627,7 +676,7 @@ export function MyBets() {
                           currentValue,
                           pnlAmount,
                           pnlPct,
-                        } = getOpenPositionMetrics(bet, market)
+                        } = getOpenPositionMetrics(bet, market, onChainBalances[bet.id])
 
                         return (
                           <motion.tr

@@ -20,13 +20,14 @@ import {
   closeMarket as contractCloseMarket,
   voteOutcome as contractVoteOutcome,
   disputeResolution as contractDispute,
-  finalizeVotes as contractFinalizeVotes,
   confirmResolution as contractConfirmResolution,
   claimVoterBond as contractClaimVoterBond,
   requestVoteDecryption as contractRequestVoteDecryption,
   requestVoterDecryption as contractRequestVoterDecryption,
+  revealOutcomeTally as contractRevealOutcomeTally,
+  decryptTx,
   parseContractError,
-  ensureSepoliaNetwork,
+  ensureFhenixNetwork as ensureSepoliaNetwork,
   MARKET_STATUS,
   FEES,
   FHENIX_MARKETS_ADDRESS,
@@ -331,17 +332,59 @@ export function ResolvePanel({ market, resolution, onResolutionChange }: Resolve
     try {
       await ensureSepoliaNetwork()
 
-      let receipt
       if (market.status === STATUS_PENDING_FINALIZATION) {
-        receipt = await contractConfirmResolution(market.id)
-      } else if (resolution && !resolution.decryptionRequested) {
-        receipt = await contractRequestVoteDecryption(market.id)
-      } else {
-        receipt = await contractFinalizeVotes(market.id)
+        const receipt = await contractConfirmResolution(market.id)
+        setTransactionId(receipt.hash)
+        onResolutionChange?.()
+        return
       }
+
+      if (!resolution) {
+        throw new Error('Resolution data not loaded')
+      }
+
+      // Step 1: Request Decryption
+      if (!resolution.decryptionRequested) {
+        devLog('[Resolve] Step 1: Requesting decryption...')
+        const receipt = await contractRequestVoteDecryption(market.id)
+        setTransactionId(receipt.hash)
+        onResolutionChange?.()
+        return
+      }
+
+      // Step 2: Threshold Reveal (if winning outcome is 0, it means it's not reveal-finalized)
+      if (resolution.winningOutcome === 0) {
+        devLog('[Resolve] Step 2: Performing threshold reveal...')
+        const tallies = [
+          resolution.encOutcome1Bonds,
+          resolution.encOutcome2Bonds,
+          resolution.encOutcome3Bonds,
+          resolution.encOutcome4Bonds
+        ]
+
+        // Reveal the first outcome that isn't publicly revealed yet
+        // In a real app, you might want a loop or a smarter check, 
+        // but for now we'll reveal each outcome that has a tally.
+        for (let i = 0; i < market.numOutcomes; i++) {
+          const encTally = tallies[i]
+          if (encTally && encTally !== '0') {
+             devLog(`[Resolve] Decrypting tally for outcome ${i+1}...`)
+             const { plaintext, signature } = await decryptTx(encTally)
+             const receipt = await contractRevealOutcomeTally(market.id, i, plaintext, signature)
+             setTransactionId(receipt.hash)
+             onResolutionChange?.()
+             return // Wait for confirmation before next reveal or finalize
+          }
+        }
+      }
+
+      // Step 3: Finalize
+      devLog('[Resolve] Step 3: Finalizing votes...')
+      const receipt = await contractFinalizeVotes(market.id)
       setTransactionId(receipt.hash)
       onResolutionChange?.()
     } catch (err: unknown) {
+      devWarn('[Resolve] Finalize failed:', err)
       setError(err instanceof Error ? parseContractError(err) : 'Failed to finalize outcome')
     } finally {
       setIsSubmitting(false)

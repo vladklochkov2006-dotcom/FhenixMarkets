@@ -15,7 +15,6 @@ pragma solidity ^0.8.20;
 // ============================================================================
 
 import {FHE, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
-import {ITaskManager} from "@fhenixprotocol/cofhe-contracts/ICofhe.sol";
 
 interface IFhenixMarkets {
     function markets(bytes32 marketId) external view returns (
@@ -234,6 +233,7 @@ contract FhenixGovernance {
     event VoteFinalized(bytes32 indexed proposalId, uint8 status);
     event ProposalExecuted(bytes32 indexed proposalId);
     event ProposalVetoed(bytes32 indexed proposalId);
+    event ProposalDecryptionRequested(bytes32 indexed proposalId);
 
     event ResolverRegistered(address indexed resolver);
     event ResolverUnstaked(address indexed resolver);
@@ -464,8 +464,26 @@ contract FhenixGovernance {
 
         decryptionRequested[proposalId] = true;
 
-        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(euint128.unwrap(encVotesFor[proposalId])), msg.sender);
-        ITaskManager(0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9).createDecryptTask(uint256(euint128.unwrap(encVotesAgainst[proposalId])), msg.sender);
+        FHE.allowPublic(encVotesFor[proposalId]);
+        FHE.allowPublic(encVotesAgainst[proposalId]);
+        
+        emit ProposalDecryptionRequested(proposalId);
+    }
+
+    /**
+     * @notice Callback for threshold network to provide decrypted proposal tallies.
+     */
+    function revealProposalTally(
+        bytes32 proposalId,
+        bool isFor,
+        uint128 plaintext,
+        bytes calldata signature
+    ) external {
+        if (isFor) {
+            FHE.publishDecryptResult(encVotesFor[proposalId], plaintext, signature);
+        } else {
+            FHE.publishDecryptResult(encVotesAgainst[proposalId], plaintext, signature);
+        }
     }
 
     // ========================================================================

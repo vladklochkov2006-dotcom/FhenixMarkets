@@ -242,6 +242,7 @@ export interface FhenixGovernanceInterface extends Interface {
       | "requestVoteDecryption"
       | "resolverPanels"
       | "resolverRegistry"
+      | "revealProposalTally"
       | "rewardEpochs"
       | "setCommitteeMembers"
       | "slashResolver"
@@ -272,6 +273,7 @@ export interface FhenixGovernanceInterface extends Interface {
       | "PanelFinalized"
       | "PanelVoteSubmitted"
       | "ProposalCreated"
+      | "ProposalDecryptionRequested"
       | "ProposalExecuted"
       | "ProposalVetoed"
       | "ResolverBlacklisted"
@@ -624,6 +626,10 @@ export interface FhenixGovernanceInterface extends Interface {
   encodeFunctionData(
     functionFragment: "resolverRegistry",
     values: [AddressLike]
+  ): string;
+  encodeFunctionData(
+    functionFragment: "revealProposalTally",
+    values: [BytesLike, boolean, BigNumberish, BytesLike]
   ): string;
   encodeFunctionData(
     functionFragment: "rewardEpochs",
@@ -1012,6 +1018,10 @@ export interface FhenixGovernanceInterface extends Interface {
     data: BytesLike
   ): Result;
   decodeFunctionResult(
+    functionFragment: "revealProposalTally",
+    data: BytesLike
+  ): Result;
+  decodeFunctionResult(
     functionFragment: "rewardEpochs",
     data: BytesLike
   ): Result;
@@ -1220,6 +1230,18 @@ export namespace ProposalCreatedEvent {
     proposalId: string;
     proposer: string;
     proposalType: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace ProposalDecryptionRequestedEvent {
+  export type InputTuple = [proposalId: BytesLike];
+  export type OutputTuple = [proposalId: string];
+  export interface OutputObject {
+    proposalId: string;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -1812,6 +1834,17 @@ export interface FhenixGovernance extends BaseContract {
     "view"
   >;
 
+  revealProposalTally: TypedContractMethod<
+    [
+      proposalId: BytesLike,
+      isFor: boolean,
+      plaintext: BigNumberish,
+      signature: BytesLike
+    ],
+    [void],
+    "nonpayable"
+  >;
+
   rewardEpochs: TypedContractMethod<
     [arg0: BigNumberish],
     [
@@ -2358,6 +2391,18 @@ export interface FhenixGovernance extends BaseContract {
     "view"
   >;
   getFunction(
+    nameOrSignature: "revealProposalTally"
+  ): TypedContractMethod<
+    [
+      proposalId: BytesLike,
+      isFor: boolean,
+      plaintext: BigNumberish,
+      signature: BytesLike
+    ],
+    [void],
+    "nonpayable"
+  >;
+  getFunction(
     nameOrSignature: "rewardEpochs"
   ): TypedContractMethod<
     [arg0: BigNumberish],
@@ -2523,6 +2568,13 @@ export interface FhenixGovernance extends BaseContract {
     ProposalCreatedEvent.InputTuple,
     ProposalCreatedEvent.OutputTuple,
     ProposalCreatedEvent.OutputObject
+  >;
+  getEvent(
+    key: "ProposalDecryptionRequested"
+  ): TypedContractEvent<
+    ProposalDecryptionRequestedEvent.InputTuple,
+    ProposalDecryptionRequestedEvent.OutputTuple,
+    ProposalDecryptionRequestedEvent.OutputObject
   >;
   getEvent(
     key: "ProposalExecuted"
@@ -2722,6 +2774,17 @@ export interface FhenixGovernance extends BaseContract {
       ProposalCreatedEvent.InputTuple,
       ProposalCreatedEvent.OutputTuple,
       ProposalCreatedEvent.OutputObject
+    >;
+
+    "ProposalDecryptionRequested(bytes32)": TypedContractEvent<
+      ProposalDecryptionRequestedEvent.InputTuple,
+      ProposalDecryptionRequestedEvent.OutputTuple,
+      ProposalDecryptionRequestedEvent.OutputObject
+    >;
+    ProposalDecryptionRequested: TypedContractEvent<
+      ProposalDecryptionRequestedEvent.InputTuple,
+      ProposalDecryptionRequestedEvent.OutputTuple,
+      ProposalDecryptionRequestedEvent.OutputObject
     >;
 
     "ProposalExecuted(bytes32)": TypedContractEvent<

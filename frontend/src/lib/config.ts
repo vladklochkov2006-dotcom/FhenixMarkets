@@ -81,8 +81,8 @@ function loadConfig(): AppConfig {
     explorerUrl: getEnv('VITE_EXPLORER_URL', 'https://sepolia.etherscan.io'),
 
     // Contracts — deployed on Sepolia
-    marketsContract: getEnv('VITE_MARKETS_CONTRACT', '0x902926359c1b3f3275f6C9251637ADF8c8Ba79f0'),
-    governanceContract: getEnv('VITE_GOVERNANCE_CONTRACT', '0xc99B0ccBFDC20D6ea99da4Ef7c7CAeE5Cd0Ad656'),
+    marketsContract: getEnv('VITE_MARKETS_CONTRACT', '0x5CDd4A82Ec52E2009072d21DF8EF233841de607B'),
+    governanceContract: getEnv('VITE_GOVERNANCE_CONTRACT', '0x75042ED84d417a4c897ACf1f4112467bC041d6a3'),
 
     // Wallet
     enableDemoMode: getEnvBool('VITE_ENABLE_DEMO_MODE', true),

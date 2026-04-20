@@ -96,6 +96,8 @@ export function PrivyWalletBridge() {
       prevAddress.current = null
       delete (window as any).__privyGetProvider
       delete (window as any).__privyGetSigner
+      // Clear decrypt cache — permits are tied to the disconnected wallet
+      import('../lib/contracts').then(m => m.clearDecryptCache()).catch(() => {})
       useWalletStore.setState({
         wallet: {
           ...useWalletStore.getState().wallet,
